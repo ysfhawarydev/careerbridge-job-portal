@@ -165,4 +165,90 @@ describe("CareerBridge authentication integration", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json()).toHaveProperty("error");
   });
+
+  it("invalidates the session after logout", async () => {
+    const email = `logout-${randomUUID()}@example.test`;
+
+    const registration = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      headers: { origin },
+      payload: {
+        email,
+        password: "TestPassword123!",
+        fullName: "Logout Test",
+        role: "seeker",
+      },
+    });
+
+    expect(registration.statusCode).toBe(200);
+
+    const setCookie = registration.headers["set-cookie"];
+    const cookie = (
+      Array.isArray(setCookie) ? setCookie[0] : String(setCookie)
+    ).split(";")[0];
+
+    const beforeLogout = await app.inject({
+      method: "GET",
+      url: "/auth/me",
+      headers: { cookie },
+    });
+
+    expect(beforeLogout.statusCode).toBe(200);
+    expect(beforeLogout.json().user.email).toBe(email);
+
+    const logout = await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: {
+        origin,
+        cookie,
+      },
+    });
+
+    expect(logout.statusCode).toBe(200);
+
+    const afterLogout = await app.inject({
+      method: "GET",
+      url: "/auth/me",
+      headers: { cookie },
+    });
+
+    expect(afterLogout.statusCode).toBe(200);
+    expect(afterLogout.json()).toEqual({ user: null });
+
+    const protectedRoute = await app.inject({
+      method: "GET",
+      url: "/profile",
+      headers: { cookie },
+    });
+
+    expect(protectedRoute.statusCode).toBe(401);
+  });
+
+  it("sets secure session cookie attributes", async () => {
+    const email = `cookie-${randomUUID()}@example.test`;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      headers: { origin },
+      payload: {
+        email,
+        password: "TestPassword123!",
+        fullName: "Cookie Test",
+        role: "seeker",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const setCookie = response.headers["set-cookie"];
+    const cookie = Array.isArray(setCookie) ? setCookie[0] : String(setCookie);
+
+    expect(cookie).toMatch(/httponly/i);
+    expect(cookie).toMatch(/samesite=lax/i);
+    expect(cookie).toMatch(/path=\//i);
+    expect(cookie).toMatch(/max-age=604800/i);
+  });
 });
