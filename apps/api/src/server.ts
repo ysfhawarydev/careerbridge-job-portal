@@ -1,7 +1,7 @@
 import { config } from "dotenv";
 import { fileURLToPath as envFileURLToPath } from "node:url";
 config({ path: envFileURLToPath(new URL("../../../.env", import.meta.url)) });
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
@@ -36,23 +36,22 @@ await app.register(cookie);
 await app.register(helmet);
 await app.register(rateLimit, { max: 100, timeWindow: "1 minute" });
 
-// Cookie-authenticated mutations must originate from the configured frontend.
+const allowedOrigin = new URL(process.env.WEB_ORIGIN ?? "http://localhost:3000").origin;
 app.addHook("preHandler", async (req, reply) => {
   if (!["POST", "PATCH", "PUT", "DELETE"].includes(req.method)) return;
-  const origin = req.headers.origin;
-  const allowed = process.env.WEB_ORIGIN ?? "http://localhost:3000";
-  if (origin && origin !== allowed) return reply.code(403).send({ error: "Origin not allowed" });
-  // Browsers supply Origin for cross-origin fetch. Reject untrusted Referer as defense in depth.
-  const referer = req.headers.referer;
-  if (!origin && referer) {
-    try { if (new URL(referer).origin !== allowed) return reply.code(403).send({ error: "Origin not allowed" }); }
-    catch { return reply.code(403).send({ error: "Origin not allowed" }); }
+  if (req.headers.origin !== undefined) {
+    if (req.headers.origin !== allowedOrigin)
+      return reply.code(403).send({ error: "Origin not allowed" });
+    return;
   }
+  if (req.headers.referer) {
+    try {
+      if (new URL(req.headers.referer).origin === allowedOrigin) return;
+    } catch { /* Invalid Referer */ }
+  }
+  return reply.code(403).send({ error: "Trusted origin required" });
 });
 app.setErrorHandler((error: unknown, request, reply) => {
-  if (error instanceof ZodError) {
-    return reply.code(400).send({ error: "Invalid request", details: error.issues.map(i => ({ path: i.path.join("."), message: i.message })) });
-  }
   const isError = error instanceof Error;
 
   const rawStatus =
@@ -101,7 +100,7 @@ type User = {
   full_name: string;
   role: "seeker" | "employer" | "admin";
 };
-async function currentUser(req: any): Promise<User | null> {
+async function currentUser(req: FastifyRequest): Promise<User | null> {
   const token = req.cookies?.session;
   if (typeof token !== "string" || !token) return null;
   const rows = await db<
@@ -109,7 +108,7 @@ async function currentUser(req: any): Promise<User | null> {
   >`SELECT u.id,u.email,u.full_name,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=${hash(token)} AND s.expires_at>now() LIMIT 1`;
   return rows[0] ?? null;
 }
-async function requireUser(req: any, reply: any, role?: User["role"]) {
+async function requireUser(req: FastifyRequest, reply: FastifyReply, role?: User["role"]) {
   const user = await currentUser(req);
   if (!user) {
     reply.code(401).send({ error: "Authentication required" });
@@ -121,7 +120,7 @@ async function requireUser(req: any, reply: any, role?: User["role"]) {
   }
   return user;
 }
-async function newSession(userId: string, reply: any) {
+async function newSession(userId: string, reply: FastifyReply) {
   const token = randomBytes(32).toString("hex");
   await db`INSERT INTO sessions(user_id,token_hash,expires_at) VALUES(${userId},${hash(token)},now()+interval '7 days')`;
   reply.setCookie("session", token, {
@@ -168,6 +167,8 @@ app.post(
       await db`SELECT id,email,full_name,role,password_hash FROM users WHERE email=${data.email} LIMIT 1`;
     if (!rows.length || !(await verify(data.password, rows[0].password_hash)))
       return reply.code(401).send({ error: "Invalid credentials" });
+    const previousToken = req.cookies.session;
+    if (previousToken) await db`DELETE FROM sessions WHERE token_hash=${hash(previousToken)}`;
     await newSession(rows[0].id, reply);
     const { password_hash, ...user } = rows[0];
     return { user };
@@ -313,7 +314,7 @@ app.patch("/employer/applications/:id", async (req, reply) => {
     WHERE a.id=${id} AND a.job_id=j.id AND c.owner_id=${user.id} RETURNING a.*`;
   return rows[0] ?? reply.code(404).send({ error: "Application not found" });
 });
-// Job seeker profile and saved opportunities.
+// Job seeker profile.
 app.patch("/profile", async (req, reply) => {
   const user = await requireUser(req, reply, "seeker");
   if (!user) return;
@@ -348,33 +349,35 @@ app.get("/saved-jobs", async (req, reply) => {
 app.put("/saved-jobs/:id", async (req, reply) => {
   const user = await requireUser(req, reply, "seeker");
   if (!user) return;
-  const {id} = z.object({id:z.string().uuid()}).parse(req.params);
+  const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
   const rows = await db`INSERT INTO saved_jobs(user_id,job_id)
     SELECT ${user.id},id FROM jobs WHERE id=${id} AND status='published'
     ON CONFLICT DO NOTHING RETURNING job_id`;
   if (!rows.length) {
-    const existing = await db`SELECT 1 FROM saved_jobs WHERE user_id=${user.id} AND job_id=${id}`;
-    if (!existing.length) return reply.code(404).send({error:"Job not found"});
+    const existing = await db`SELECT 1 FROM saved_jobs s JOIN jobs j ON j.id=s.job_id
+      WHERE s.user_id=${user.id} AND s.job_id=${id} AND j.status='published'`;
+    if (!existing.length) return reply.code(404).send({ error: "Job not found" });
   }
-  return {ok:true};
+  return { ok: true };
 });
 app.delete("/saved-jobs/:id", async (req, reply) => {
   const user = await requireUser(req, reply, "seeker");
   if (!user) return;
-  const {id} = z.object({id:z.string().uuid()}).parse(req.params);
+  const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
   await db`DELETE FROM saved_jobs WHERE user_id=${user.id} AND job_id=${id}`;
-  return {ok:true};
+  return { ok: true };
 });
-// Employers may close and reopen their own listings; drafts are not public.
 app.patch("/employer/jobs/:id", async (req, reply) => {
   const user = await requireUser(req, reply, "employer");
   if (!user) return;
-  const {id} = z.object({id:z.string().uuid()}).parse(req.params);
-  const {status} = z.object({status:z.enum(["draft","published","closed"])}).parse(req.body);
+  const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+  const { status } = z.object({
+    status: z.enum(["draft", "published", "closed"]),
+  }).parse(req.body);
   const rows = await db`UPDATE jobs j SET status=${status}
     FROM companies c WHERE j.id=${id} AND c.id=j.company_id
     AND c.owner_id=${user.id} RETURNING j.*`;
-  if (!rows.length) return reply.code(404).send({error:"Job not found"});
+  if (!rows.length) return reply.code(404).send({ error: "Job not found" });
   return rows[0];
 });
 app.addHook("onClose", async () => {
