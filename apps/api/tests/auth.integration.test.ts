@@ -4,6 +4,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { assertTestDatabase } from "./assert-test-db.js";
+import postgres from "postgres";
+import { createHash } from "node:crypto";
+import { TEST_DATABASE_URL } from "./test-env.js";
 
 let app: FastifyInstance;
 
@@ -164,5 +167,158 @@ describe("CareerBridge authentication integration", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toHaveProperty("error");
+  });
+
+  it("invalidates the session after logout", async () => {
+    const email = `logout-${randomUUID()}@example.test`;
+
+    const registration = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      headers: { origin },
+      payload: {
+        email,
+        password: "TestPassword123!",
+        fullName: "Logout Test",
+        role: "seeker",
+      },
+    });
+
+    expect(registration.statusCode).toBe(200);
+
+    const setCookie = registration.headers["set-cookie"];
+    const cookie = (
+      Array.isArray(setCookie) ? setCookie[0] : String(setCookie)
+    ).split(";")[0];
+
+    const beforeLogout = await app.inject({
+      method: "GET",
+      url: "/auth/me",
+      headers: { cookie },
+    });
+
+    expect(beforeLogout.statusCode).toBe(200);
+    expect(beforeLogout.json().user.email).toBe(email);
+
+    const logout = await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: {
+        origin,
+        cookie,
+      },
+    });
+
+    expect(logout.statusCode).toBe(200);
+
+    const afterLogout = await app.inject({
+      method: "GET",
+      url: "/auth/me",
+      headers: { cookie },
+    });
+
+    expect(afterLogout.statusCode).toBe(200);
+    expect(afterLogout.json()).toEqual({ user: null });
+
+    const protectedRoute = await app.inject({
+      method: "GET",
+      url: "/profile",
+      headers: { cookie },
+    });
+
+    expect(protectedRoute.statusCode).toBe(401);
+  });
+
+  it("sets secure session cookie attributes", async () => {
+    const email = `cookie-${randomUUID()}@example.test`;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      headers: { origin },
+      payload: {
+        email,
+        password: "TestPassword123!",
+        fullName: "Cookie Test",
+        role: "seeker",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const setCookie = response.headers["set-cookie"];
+    const cookie = Array.isArray(setCookie) ? setCookie[0] : String(setCookie);
+
+    expect(cookie).toMatch(/httponly/i);
+    expect(cookie).toMatch(/samesite=lax/i);
+    expect(cookie).toMatch(/path=\//i);
+    expect(cookie).toMatch(/max-age=604800/i);
+  });
+
+  it("rejects expired sessions", async () => {
+    const email = `expired-${randomUUID()}@example.test`;
+
+    const registration = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      headers: { origin },
+      payload: {
+        email,
+        password: "TestPassword123!",
+        fullName: "Expired Session Test",
+        role: "seeker",
+      },
+    });
+
+    expect(registration.statusCode).toBe(200);
+
+    const setCookie = registration.headers["set-cookie"];
+    expect(setCookie).toBeDefined();
+
+    const cookie = (
+      Array.isArray(setCookie) ? setCookie[0] : String(setCookie)
+    ).split(";")[0];
+
+    const token = cookie.slice("session=".length);
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+
+    // Only connect to the isolated integration-test database.
+    const db = postgres(TEST_DATABASE_URL, { max: 1 });
+
+    try {
+      const database = await db<{ name: string }[]>`
+      SELECT current_database() AS name
+    `;
+
+      expect(database[0]?.name).toBe("portal_test");
+
+      const updated = await db`
+      UPDATE sessions
+      SET expires_at = now() - interval '1 minute'
+      WHERE token_hash = ${tokenHash}
+      RETURNING token_hash
+    `;
+
+      expect(updated).toHaveLength(1);
+    } finally {
+      await db.end();
+    }
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/me",
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ user: null });
+
+    const protectedResponse = await app.inject({
+      method: "GET",
+      url: "/profile",
+      headers: { cookie },
+    });
+
+    expect(protectedResponse.statusCode).toBe(401);
   });
 });
