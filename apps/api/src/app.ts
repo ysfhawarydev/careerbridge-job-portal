@@ -19,17 +19,20 @@ import { promisify } from "node:util";
 import { isTrustedOrigin } from "./security.js";
 
 const scrypt = promisify(scryptCb);
-const db = postgres(
-  process.env.DATABASE_URL ?? "postgres://portal:portal@localhost:5432/portal",
-  { max: 15 },
-);
-const redis = createClient({
-  url: process.env.REDIS_URL ?? "redis://localhost:6379",
-});
-redis.on("error", (e) => console.error("Redis:", e.message));
-
 export async function buildApp() {
+  const db = postgres(
+    process.env.DATABASE_URL ?? "postgres://portal:portal@localhost:5432/portal",
+    { max: 15 },
+  );
+
+  const redis = createClient({
+    url: process.env.REDIS_URL ?? "redis://localhost:6379",
+  });
+
+  redis.on("error", (e) => console.error("Redis:", e.message));
+
   await redis.connect();
+
   const app = Fastify({ logger: true, trustProxy: false });
 await app.register(cors, {
   origin: process.env.WEB_ORIGIN ?? "http://localhost:3000",
