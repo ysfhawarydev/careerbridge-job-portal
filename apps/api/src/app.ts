@@ -21,6 +21,7 @@ import {
 import { promisify } from "node:util";
 import { isTrustedOrigin } from "./security.js";
 import { loggerOptions } from "./logger.js";
+import { checkReadiness } from "./readiness.js";
 
 const scrypt = promisify(scryptCb);
 
@@ -358,6 +359,15 @@ export async function buildApp() {
   app.get("/health", async () => ({
     ok: true,
   }));
+
+  app.get("/ready", async (_request, reply) => {
+    const result = await checkReadiness(
+      () => db`SELECT 1`,
+      () => redis.ping(),
+    );
+
+    return reply.code(result.ok ? 200 : 503).send(result);
+  });
 
   // Public jobs
 
