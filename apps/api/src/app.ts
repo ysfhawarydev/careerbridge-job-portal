@@ -231,6 +231,254 @@ export async function buildApp() {
       return user;
     }
 
+    // --------------------------------------------------
+    // Job alerts
+    // --------------------------------------------------
+
+    app.get("/job-alerts", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
+
+      if (!user) return;
+
+      return db`
+    SELECT
+      id,
+      keyword,
+      location,
+      type,
+      is_active,
+      created_at,
+      updated_at
+    FROM job_alerts
+    WHERE user_id = ${user.id}
+    ORDER BY created_at DESC
+  `;
+    });
+
+    app.post("/job-alerts", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
+
+      if (!user) return;
+
+      const data = z
+        .object({
+          keyword: z.string().trim().max(100).default(""),
+          location: z.string().trim().max(100).default(""),
+          type: z
+            .enum(["full-time", "part-time", "contract", "internship"])
+            .nullable()
+            .optional(),
+          isActive: z.boolean().default(true),
+        })
+        .refine(
+          (value) =>
+            value.keyword.length > 0 ||
+            value.location.length > 0 ||
+            value.type != null,
+          {
+            message: "Provide a keyword, location, or employment type",
+          },
+        )
+        .parse(req.body);
+
+      const rows = await db`
+    INSERT INTO job_alerts (
+      user_id,
+      keyword,
+      location,
+      type,
+      is_active
+    )
+    VALUES (
+      ${user.id},
+      ${data.keyword},
+      ${data.location},
+      ${data.type ?? null},
+      ${data.isActive}
+    )
+    RETURNING *
+  `;
+
+      return reply.code(201).send(rows[0]);
+    });
+
+    app.patch("/job-alerts/:id", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
+
+      if (!user) return;
+
+      const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+      const data = z
+        .object({
+          keyword: z.string().trim().max(100).optional(),
+          location: z.string().trim().max(100).optional(),
+          type: z
+            .enum(["full-time", "part-time", "contract", "internship"])
+            .nullable()
+            .optional(),
+          isActive: z.boolean().optional(),
+        })
+        .refine((value) => Object.keys(value).length > 0, {
+          message: "Provide at least one field to update",
+        })
+        .parse(req.body);
+
+      const rows = await db`
+    UPDATE job_alerts
+    SET
+      keyword = COALESCE(${data.keyword ?? null}, keyword),
+      location = COALESCE(${data.location ?? null}, location),
+      type = CASE
+        WHEN ${data.type === undefined} THEN type
+        ELSE ${data.type ?? null}
+      END,
+      is_active = COALESCE(${data.isActive ?? null}, is_active),
+      updated_at = now()
+    WHERE id = ${id}
+      AND user_id = ${user.id}
+    RETURNING *
+  `;
+
+      if (!rows.length) {
+        return reply.code(404).send({
+          error: "Job alert not found",
+        });
+      }
+
+      return rows[0];
+    });
+
+    app.delete("/job-alerts/:id", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
+
+      if (!user) return;
+
+      const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+      const rows = await db`
+    DELETE FROM job_alerts
+    WHERE id = ${id}
+      AND user_id = ${user.id}
+    RETURNING id
+  `;
+
+      if (!rows.length) {
+        return reply.code(404).send({
+          error: "Job alert not found",
+        });
+      }
+
+      return { ok: true };
+    });
+
+    // --------------------------------------------------
+    // Notifications
+    // --------------------------------------------------
+
+    app.get("/notifications", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
+
+      if (!user) return;
+
+      const query = z
+        .object({
+          unreadOnly: z.enum(["true", "false"]).default("false"),
+          limit: z.coerce.number().int().min(1).max(100).default(30),
+        })
+        .parse(req.query);
+
+      return db`
+    SELECT
+      n.id,
+      n.job_id,
+      n.kind,
+      n.title,
+      n.message,
+      n.is_read,
+      n.created_at,
+      j.title AS job_title
+    FROM notifications n
+    LEFT JOIN jobs j ON j.id = n.job_id
+    WHERE n.user_id = ${user.id}
+      AND (
+        ${query.unreadOnly === "false"}
+        OR n.is_read = false
+      )
+    ORDER BY n.created_at DESC
+    LIMIT ${query.limit}
+  `;
+    });
+
+    app.patch("/notifications/:id/read", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
+
+      if (!user) return;
+
+      const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+      const rows = await db`
+    UPDATE notifications
+    SET is_read = true
+    WHERE id = ${id}
+      AND user_id = ${user.id}
+    RETURNING id, is_read
+  `;
+
+      if (!rows.length) {
+        return reply.code(404).send({
+          error: "Notification not found",
+        });
+      }
+
+      return rows[0];
+    });
+
+    app.patch("/notifications/read-all", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
+
+      if (!user) return;
+
+      const rows = await db`
+    UPDATE notifications
+    SET is_read = true
+    WHERE user_id = ${user.id}
+      AND is_read = false
+    RETURNING id
+  `;
+
+      return {
+        ok: true,
+        updated: rows.length,
+      };
+    });
+
+    async function notifyMatchingAlerts(jobId: string) {
+      await db`
+    INSERT INTO notifications (
+      user_id,
+      job_id,
+      kind,
+      title,
+      message
+    )
+    SELECT DISTINCT
+      a.user_id,
+      j.id,
+      'job_match',
+      'New job match: ' || j.title,
+      c.name || ' · ' || j.location
+    FROM job_alerts a
+    JOIN jobs j ON j.status = 'published'
+    JOIN companies c ON c.id = j.company_id
+    WHERE j.id = ${jobId}
+      AND a.is_active = true
+    ON CONFLICT (user_id, job_id, kind)
+      WHERE job_id IS NOT NULL
+    DO NOTHING
+  `;
+    }
+
     async function newSession(userId: string, reply: FastifyReply) {
       const token = randomBytes(32).toString("hex");
 
@@ -640,6 +888,8 @@ export async function buildApp() {
           error: "Company not owned by you",
         });
       }
+
+      await notifyMatchingAlerts(rows[0].id);
 
       return reply.code(201).send(rows[0]);
     });
