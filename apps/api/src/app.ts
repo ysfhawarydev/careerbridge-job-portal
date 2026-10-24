@@ -19,26 +19,27 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { promisify } from "node:util";
+
 import { isTrustedOrigin } from "./security.js";
 import { loggerOptions } from "./logger.js";
 import { checkReadiness } from "./readiness.js";
+import { parseConfig } from "./config.js";
 
 const scrypt = promisify(scryptCb);
 
 export async function buildApp() {
-  const db = postgres(
-    process.env.DATABASE_URL ??
-      "postgres://portal:portal@localhost:5432/portal",
-    { max: 15 },
-  );
+  // Validate configuration before opening external connections.
+  const env = parseConfig();
 
-  const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379";
+  const db = postgres(env.DATABASE_URL, { max: 15 });
+
+  const redisUrl = env.REDIS_URL;
 
   // Existing Redis client for job caching.
   const redis = createClient({ url: redisUrl });
 
-  redis.on("error", (e) => {
-    console.error("Redis:", e.message);
+  redis.on("error", (error) => {
+    console.error("Redis:", error.message);
   });
 
   await redis.connect();
@@ -54,7 +55,6 @@ export async function buildApp() {
     console.error("Rate-limit Redis:", error.message);
   });
 
-  // Wait until Redis is connected before registering rate limiting.
   await rateLimitRedis.connect();
 
   const app = Fastify({
@@ -67,7 +67,7 @@ export async function buildApp() {
   });
 
   await app.register(cors, {
-    origin: process.env.WEB_ORIGIN ?? "http://localhost:3000",
+    origin: env.WEB_ORIGIN,
     credentials: true,
   });
 
@@ -78,10 +78,10 @@ export async function buildApp() {
     max: 100,
     timeWindow: "1 minute",
     redis: rateLimitRedis,
-    nameSpace: process.env.RATE_LIMIT_NAMESPACE ?? "careerbridge:rate-limit:",
+    nameSpace: env.RATE_LIMIT_NAMESPACE,
   });
 
-  const allowedOrigin = process.env.WEB_ORIGIN ?? "http://localhost:3000";
+  const allowedOrigin = env.WEB_ORIGIN;
 
   app.addHook("preHandler", async (req, reply) => {
     if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
@@ -131,7 +131,8 @@ export async function buildApp() {
     });
   });
 
-  const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+  const hash = (value: string) =>
+    createHash("sha256").update(value).digest("hex");
 
   async function passwordHash(password: string) {
     const salt = randomBytes(16).toString("hex");
@@ -143,7 +144,9 @@ export async function buildApp() {
   async function verify(password: string, stored: string) {
     const [salt, hex] = stored.split(":");
 
-    if (!salt || !hex || hex.length !== 128) return false;
+    if (!salt || !hex || hex.length !== 128) {
+      return false;
+    }
 
     const key = (await scrypt(password, salt, 64)) as Buffer;
 
@@ -160,7 +163,9 @@ export async function buildApp() {
   async function currentUser(req: FastifyRequest): Promise<User | null> {
     const token = req.cookies?.session;
 
-    if (typeof token !== "string" || !token) return null;
+    if (typeof token !== "string" || !token) {
+      return null;
+    }
 
     const rows = await db<User[]>`
       SELECT u.id, u.email, u.full_name, u.role
@@ -214,7 +219,7 @@ export async function buildApp() {
 
     reply.setCookie("session", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: env.NODE_ENV === "production",
       sameSite: "lax",
       path: "/",
       maxAge: 604800,
@@ -226,12 +231,14 @@ export async function buildApp() {
       .string()
       .email()
       .max(255)
-      .transform((x) => x.toLowerCase()),
+      .transform((value) => value.toLowerCase()),
 
     password: z.string().min(8).max(128),
   });
 
+  // --------------------------------------------------
   // Authentication
+  // --------------------------------------------------
 
   app.post(
     "/auth/register",
@@ -354,30 +361,29 @@ export async function buildApp() {
     user: await currentUser(req),
   }));
 
-  // Health
+  // --------------------------------------------------
+  // Health and readiness
+  // --------------------------------------------------
 
   app.get("/health", async () => ({
     ok: true,
   }));
 
   app.get("/ready", async (_request, reply) => {
-    const configuredTimeout = Number(process.env.READINESS_TIMEOUT_MS ?? 1000);
-
-    const timeoutMs =
-      Number.isFinite(configuredTimeout) && configuredTimeout > 0
-        ? configuredTimeout
-        : 1000;
-
     const result = await checkReadiness(
       () => db`SELECT 1`,
       () => redis.ping(),
-      { timeoutMs },
+      {
+        timeoutMs: env.READINESS_TIMEOUT_MS,
+      },
     );
 
     return reply.code(result.ok ? 200 : 503).send(result);
   });
 
+  // --------------------------------------------------
   // Public jobs
+  // --------------------------------------------------
 
   app.get("/jobs", async (req) => {
     const query = z
@@ -390,6 +396,7 @@ export async function buildApp() {
       .parse(req.query);
 
     const offset = (query.page - 1) * query.limit;
+
     const q = query.q?.trim() ?? "";
     const loc = query.location?.trim() ?? "";
 
@@ -406,7 +413,9 @@ export async function buildApp() {
 
     const cached = await redis.get(key);
 
-    if (cached) return JSON.parse(cached);
+    if (cached) {
+      return JSON.parse(cached);
+    }
 
     const jobs = await db`
       SELECT
@@ -473,7 +482,9 @@ export async function buildApp() {
     );
   });
 
+  // --------------------------------------------------
   // Companies
+  // --------------------------------------------------
 
   app.post("/companies", async (req, reply) => {
     const user = await requireUser(req, reply, "employer");
@@ -517,7 +528,9 @@ export async function buildApp() {
     `;
   });
 
+  // --------------------------------------------------
   // Employer jobs
+  // --------------------------------------------------
 
   app.post("/jobs", async (req, reply) => {
     const user = await requireUser(req, reply, "employer");
@@ -535,10 +548,10 @@ export async function buildApp() {
         salaryMax: z.number().int().nonnegative().nullable().optional(),
       })
       .refine(
-        (x) =>
-          x.salaryMin == null ||
-          x.salaryMax == null ||
-          x.salaryMin <= x.salaryMax,
+        (value) =>
+          value.salaryMin == null ||
+          value.salaryMax == null ||
+          value.salaryMin <= value.salaryMax,
         {
           message: "Invalid salary range",
         },
@@ -599,7 +612,9 @@ export async function buildApp() {
     `;
   });
 
+  // --------------------------------------------------
   // Applications
+  // --------------------------------------------------
 
   app.post("/jobs/:id/apply", async (req, reply) => {
     const user = await requireUser(req, reply, "seeker");
@@ -730,7 +745,9 @@ export async function buildApp() {
     );
   });
 
+  // --------------------------------------------------
   // Job seeker profile
+  // --------------------------------------------------
 
   app.patch("/profile", async (req, reply) => {
     const user = await requireUser(req, reply, "seeker");
@@ -788,7 +805,9 @@ export async function buildApp() {
     return rows[0];
   });
 
+  // --------------------------------------------------
   // Saved jobs
+  // --------------------------------------------------
 
   app.get("/saved-jobs", async (req, reply) => {
     const user = await requireUser(req, reply, "seeker");
@@ -878,7 +897,9 @@ export async function buildApp() {
     return { ok: true };
   });
 
+  // --------------------------------------------------
   // Employer job status
+  // --------------------------------------------------
 
   app.patch("/employer/jobs/:id", async (req, reply) => {
     const user = await requireUser(req, reply, "employer");
@@ -916,7 +937,9 @@ export async function buildApp() {
     return rows[0];
   });
 
+  // --------------------------------------------------
   // Graceful shutdown
+  // --------------------------------------------------
 
   app.addHook("onClose", async () => {
     rateLimitRedis.disconnect();
