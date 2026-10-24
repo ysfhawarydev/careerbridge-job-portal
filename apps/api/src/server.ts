@@ -1,5 +1,7 @@
+import { parseConfig } from "./config.js";
 import { buildApp } from "./app.js";
 
+const env = parseConfig();
 const app = await buildApp();
 
 let shutdownPromise: Promise<void> | undefined;
@@ -34,7 +36,7 @@ process.once("SIGTERM", () => {
 
 try {
   await app.listen({
-    port: Number(process.env.API_PORT ?? 4000),
+    port: env.API_PORT,
     host: "0.0.0.0",
   });
 } catch (error) {
