@@ -1,0 +1,11 @@
+'use client';
+import {useEffect,useState,use} from 'react';
+import Link from 'next/link';
+import {api,Job} from '../../../lib/api';
+export default function JobPage({params}:{params:Promise<{id:string}>}){
+ const {id}=use(params),[job,setJob]=useState<Job|null>(null),[coverLetter,setCoverLetter]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState(''),[saved,setSaved]=useState(false),[busy,setBusy]=useState(false);
+ useEffect(()=>{api<Job>('/jobs/'+id).then(setJob).catch(e=>setError(e.message))},[id]);
+ async function save(){setError('');try{await api('/saved-jobs/'+id,{method:'PUT'});setSaved(true);setMessage('Saved to your dashboard')}catch(e){setError(e instanceof Error?e.message:'Unable to save job')}}
+ async function apply(){setBusy(true);setError('');try{await api('/jobs/'+id+'/apply',{method:'POST',body:JSON.stringify({coverLetter})});setMessage('Application submitted successfully!');setError('')}catch(e:any){setError(e.message+' — Sign in as a job seeker to apply.')}finally{setBusy(false)}} 
+ return <main className="max-w-4xl mx-auto px-5 py-12"><Link href="/" className="text-blue-600">← All jobs</Link>{error&&<p role="alert" className="mt-4 text-red-600">{error}</p>}{!job?<p className="mt-8">Loading…</p>:<div className="card mt-6"><p className="text-blue-600 font-semibold">{job.company_name}</p><h1 className="text-3xl font-bold mt-2">{job.title}</h1><p className="text-slate-500 mt-3">{job.location} · {job.type}</p><button type="button" onClick={save} disabled={saved} className="btn-secondary mt-6">{saved?"Saved ✓":"Save job for later"}</button><h2 className="font-bold text-xl mt-10 mb-3">About the role</h2><p className="whitespace-pre-wrap text-slate-700">{job.description}</p><div className="border-t mt-9 pt-7"><h2 className="text-xl font-bold mb-3">Apply for this role</h2><label className="label">Cover letter (optional)</label><textarea rows={5} maxLength={5000} value={coverLetter} onChange={e=>setCoverLetter(e.target.value)} placeholder="Tell the employer why you're a good fit"/>{message&&<p className="text-green-700 mt-3">{message}</p>}<button onClick={apply} disabled={busy||!!message} className="btn mt-4">{busy?"Submitting…":"Submit application"}</button></div></div>}</main>
+}

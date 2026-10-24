@@ -1,0 +1,1 @@
+{"name":"job-portal","private":true,"packageManager":"pnpm@9.15.4","scripts":{"dev":"pnpm --parallel --filter @portal/api --filter @portal/web dev","build":"pnpm --filter @portal/api build && pnpm --filter @portal/web build","db:migrate":"pnpm --filter @portal/api migrate"}}

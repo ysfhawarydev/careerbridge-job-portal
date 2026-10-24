@@ -1,0 +1,8 @@
+'use client';
+import {useState} from 'react';
+import {api} from '../../lib/api';
+export default function Register(){
+ const [fullName,setFullName]=useState(''),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[role,setRole]=useState('seeker'),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ async function submit(e:React.FormEvent){e.preventDefault();setBusy(true);try{await api('/auth/register',{method:'POST',body:JSON.stringify({fullName,email,password,role})});location.href='/dashboard'}catch(e:any){setError(e.message)}finally{setBusy(false)}}
+ return <main className="max-w-md mx-auto px-5 py-16"><div className="card"><h1 className="text-3xl font-bold mb-2">Create your account</h1><p className="text-slate-500 mb-7">Start your next chapter</p><form onSubmit={submit} className="space-y-4"><div><label className="label">Full name</label><input required minLength={2} value={fullName} onChange={e=>setFullName(e.target.value)}/></div><div><label className="label">Email</label><input type="email" required value={email} onChange={e=>setEmail(e.target.value)}/></div><div><label className="label">Password (8+ characters)</label><input type="password" required minLength={8} value={password} onChange={e=>setPassword(e.target.value)}/></div><div><label className="label">I am a</label><select value={role} onChange={e=>setRole(e.target.value)}><option value="seeker">Job seeker</option><option value="employer">Employer</option></select></div>{error&&<p role="alert" className="text-red-600">{error}</p>}<button disabled={busy} className="btn w-full">Create account</button></form></div></main>
+}

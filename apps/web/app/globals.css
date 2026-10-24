@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+:root{color-scheme:light}
+html{scroll-behavior:smooth}
+body{background:#f8fafc;color:#0f172a;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+::selection{background:#bfdbfe;color:#172554}
+.container-wide{width:min(100% - 2.5rem,1200px);margin-inline:auto}
+input,textarea,select{border:1px solid #dbe3ef;border-radius:12px;padding:12px 14px;background:white;width:100%;outline:none;transition:border-color .2s,box-shadow .2s}
+input:focus,textarea:focus,select:focus{border-color:#3b82f6;box-shadow:0 0 0 3px #dbeafe}
+button{cursor:pointer}
+button:disabled{opacity:.55;cursor:not-allowed}
+.btn{background:#2563eb;color:white;border-radius:12px;padding:12px 19px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;transition:background .2s,transform .2s}
+.btn:hover:not(:disabled){background:#1d4ed8;transform:translateY(-1px)}
+.btn-secondary{border:1px solid #dbe3ef;border-radius:12px;padding:11px 17px;background:white;font-weight:650;transition:background .2s}
+.btn-secondary:hover:not(:disabled){background:#eff6ff}
+.card{background:white;border:1px solid #e2e8f0;border-radius:20px;padding:24px;box-shadow:0 5px 20px rgba(15,23,42,.025)}
+.label{display:block;font-size:13px;font-weight:650;margin-bottom:7px;color:#475569}
+.job-card{transition:box-shadow .2s,transform .2s,border-color .2s}
+.job-card:hover{transform:translateY(-3px);box-shadow:0 16px 40px rgba(15,23,42,.08);border-color:#bfdbfe}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
