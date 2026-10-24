@@ -361,9 +361,17 @@ export async function buildApp() {
   }));
 
   app.get("/ready", async (_request, reply) => {
+    const configuredTimeout = Number(process.env.READINESS_TIMEOUT_MS ?? 1000);
+
+    const timeoutMs =
+      Number.isFinite(configuredTimeout) && configuredTimeout > 0
+        ? configuredTimeout
+        : 1000;
+
     const result = await checkReadiness(
       () => db`SELECT 1`,
       () => redis.ping(),
+      { timeoutMs },
     );
 
     return reply.code(result.ok ? 200 : 503).send(result);

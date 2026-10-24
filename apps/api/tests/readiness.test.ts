@@ -79,4 +79,64 @@ describe("CareerBridge dependency readiness", () => {
     expect(database).toHaveBeenCalledOnce();
     expect(redis).toHaveBeenCalledOnce();
   });
+
+  it("marks a database check unhealthy when it times out", async () => {
+    const result = await checkReadiness(
+      () => new Promise(() => {}),
+      async () => "PONG",
+      { timeoutMs: 20 },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      checks: {
+        database: false,
+        redis: true,
+      },
+    });
+  });
+
+  it("marks Redis unhealthy when it times out", async () => {
+    const result = await checkReadiness(
+      async () => true,
+      () => new Promise(() => {}),
+      { timeoutMs: 20 },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      checks: {
+        database: true,
+        redis: false,
+      },
+    });
+  });
+
+  it("marks both dependencies unhealthy when both time out", async () => {
+    const result = await checkReadiness(
+      () => new Promise(() => {}),
+      () => new Promise(() => {}),
+      { timeoutMs: 20 },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      checks: {
+        database: false,
+        redis: false,
+      },
+    });
+  });
+
+  it("rejects invalid timeout values", async () => {
+    await expect(
+      checkReadiness(
+        async () => true,
+        async () => true,
+        {
+          timeoutMs: 0,
+        },
+      ),
+    ).rejects.toThrow("timeoutMs must be a positive finite number");
+  });
 });
