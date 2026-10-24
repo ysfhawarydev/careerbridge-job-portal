@@ -139,4 +139,30 @@ describe("CareerBridge authentication integration", () => {
 
     expect(response.statusCode).toBe(403);
   });
+
+  it("returns 400 for a malformed job UUID", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/jobs/not-a-valid-uuid",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toHaveProperty("error");
+  });
+
+  it("returns 400 for an invalid registration payload", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      headers: { origin },
+      payload: {
+        email: "not-an-email",
+        password: "short",
+        role: "seeker",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toHaveProperty("error");
+  });
 });
