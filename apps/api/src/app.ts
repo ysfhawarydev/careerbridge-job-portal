@@ -194,13 +194,13 @@ export async function buildApp() {
       }
 
       const rows = await db<User[]>`
-      SELECT u.id, u.email, u.full_name, u.role
-      FROM sessions s
-      JOIN users u ON u.id = s.user_id
-      WHERE s.token_hash = ${hash(token)}
-        AND s.expires_at > now()
-      LIMIT 1
-    `;
+        SELECT u.id, u.email, u.full_name, u.role
+        FROM sessions s
+        JOIN users u ON u.id = s.user_id
+        WHERE s.token_hash = ${hash(token)}
+          AND s.expires_at > now()
+        LIMIT 1
+      `;
 
       return rows[0] ?? null;
     }
@@ -241,18 +241,18 @@ export async function buildApp() {
       if (!user) return;
 
       return db`
-    SELECT
-      id,
-      keyword,
-      location,
-      type,
-      is_active,
-      created_at,
-      updated_at
-    FROM job_alerts
-    WHERE user_id = ${user.id}
-    ORDER BY created_at DESC
-  `;
+        SELECT
+          id,
+          keyword,
+          location,
+          type,
+          is_active,
+          created_at,
+          updated_at
+        FROM job_alerts
+        WHERE user_id = ${user.id}
+        ORDER BY created_at DESC
+      `;
     });
 
     app.post("/job-alerts", async (req, reply) => {
@@ -282,22 +282,22 @@ export async function buildApp() {
         .parse(req.body);
 
       const rows = await db`
-    INSERT INTO job_alerts (
-      user_id,
-      keyword,
-      location,
-      type,
-      is_active
-    )
-    VALUES (
-      ${user.id},
-      ${data.keyword},
-      ${data.location},
-      ${data.type ?? null},
-      ${data.isActive}
-    )
-    RETURNING *
-  `;
+        INSERT INTO job_alerts (
+          user_id,
+          keyword,
+          location,
+          type,
+          is_active
+        )
+        VALUES (
+          ${user.id},
+          ${data.keyword},
+          ${data.location},
+          ${data.type ?? null},
+          ${data.isActive}
+        )
+        RETURNING *
+      `;
 
       return reply.code(201).send(rows[0]);
     });
@@ -325,20 +325,20 @@ export async function buildApp() {
         .parse(req.body);
 
       const rows = await db`
-    UPDATE job_alerts
-    SET
-      keyword = COALESCE(${data.keyword ?? null}, keyword),
-      location = COALESCE(${data.location ?? null}, location),
-      type = CASE
-        WHEN ${data.type === undefined} THEN type
-        ELSE ${data.type ?? null}
-      END,
-      is_active = COALESCE(${data.isActive ?? null}, is_active),
-      updated_at = now()
-    WHERE id = ${id}
-      AND user_id = ${user.id}
-    RETURNING *
-  `;
+        UPDATE job_alerts
+        SET
+          keyword = COALESCE(${data.keyword ?? null}, keyword),
+          location = COALESCE(${data.location ?? null}, location),
+          type = CASE
+            WHEN ${data.type === undefined} THEN type
+            ELSE ${data.type ?? null}
+          END,
+          is_active = COALESCE(${data.isActive ?? null}, is_active),
+          updated_at = now()
+        WHERE id = ${id}
+          AND user_id = ${user.id}
+        RETURNING *
+      `;
 
       if (!rows.length) {
         return reply.code(404).send({
@@ -357,11 +357,11 @@ export async function buildApp() {
       const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
 
       const rows = await db`
-    DELETE FROM job_alerts
-    WHERE id = ${id}
-      AND user_id = ${user.id}
-    RETURNING id
-  `;
+        DELETE FROM job_alerts
+        WHERE id = ${id}
+          AND user_id = ${user.id}
+        RETURNING id
+      `;
 
       if (!rows.length) {
         return reply.code(404).send({
@@ -389,25 +389,25 @@ export async function buildApp() {
         .parse(req.query);
 
       return db`
-    SELECT
-      n.id,
-      n.job_id,
-      n.kind,
-      n.title,
-      n.message,
-      n.is_read,
-      n.created_at,
-      j.title AS job_title
-    FROM notifications n
-    LEFT JOIN jobs j ON j.id = n.job_id
-    WHERE n.user_id = ${user.id}
-      AND (
-        ${query.unreadOnly === "false"}
-        OR n.is_read = false
-      )
-    ORDER BY n.created_at DESC
-    LIMIT ${query.limit}
-  `;
+        SELECT
+          n.id,
+          n.job_id,
+          n.kind,
+          n.title,
+          n.message,
+          n.is_read,
+          n.created_at,
+          j.title AS job_title
+        FROM notifications n
+        LEFT JOIN jobs j ON j.id = n.job_id
+        WHERE n.user_id = ${user.id}
+          AND (
+            ${query.unreadOnly === "false"}
+            OR n.is_read = false
+          )
+        ORDER BY n.created_at DESC
+        LIMIT ${query.limit}
+      `;
     });
 
     app.patch("/notifications/:id/read", async (req, reply) => {
@@ -418,12 +418,12 @@ export async function buildApp() {
       const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
 
       const rows = await db`
-    UPDATE notifications
-    SET is_read = true
-    WHERE id = ${id}
-      AND user_id = ${user.id}
-    RETURNING id, is_read
-  `;
+        UPDATE notifications
+        SET is_read = true
+        WHERE id = ${id}
+          AND user_id = ${user.id}
+        RETURNING id, is_read
+      `;
 
       if (!rows.length) {
         return reply.code(404).send({
@@ -440,12 +440,12 @@ export async function buildApp() {
       if (!user) return;
 
       const rows = await db`
-    UPDATE notifications
-    SET is_read = true
-    WHERE user_id = ${user.id}
-      AND is_read = false
-    RETURNING id
-  `;
+        UPDATE notifications
+        SET is_read = true
+        WHERE user_id = ${user.id}
+          AND is_read = false
+        RETURNING id
+      `;
 
       return {
         ok: true,
@@ -455,41 +455,41 @@ export async function buildApp() {
 
     async function notifyMatchingAlerts(jobId: string) {
       await db`
-    INSERT INTO notifications (
-      user_id,
-      job_id,
-      kind,
-      title,
-      message
-    )
-    SELECT DISTINCT
-      a.user_id,
-      j.id,
-      'job_match',
-      'New job match: ' || j.title,
-      c.name || ' · ' || j.location
-    FROM job_alerts a
-    JOIN jobs j ON j.status = 'published'
-    JOIN companies c ON c.id = j.company_id
-    WHERE j.id = ${jobId}
-      AND a.is_active = true
-    ON CONFLICT (user_id, job_id, kind)
-      WHERE job_id IS NOT NULL
-    DO NOTHING
-  `;
+        INSERT INTO notifications (
+          user_id,
+          job_id,
+          kind,
+          title,
+          message
+        )
+        SELECT DISTINCT
+          a.user_id,
+          j.id,
+          'job_match',
+          'New job match: ' || j.title,
+          c.name || ' · ' || j.location
+        FROM job_alerts a
+        JOIN jobs j ON j.status = 'published'
+        JOIN companies c ON c.id = j.company_id
+        WHERE j.id = ${jobId}
+          AND a.is_active = true
+        ON CONFLICT (user_id, job_id, kind)
+          WHERE job_id IS NOT NULL
+        DO NOTHING
+      `;
     }
 
     async function newSession(userId: string, reply: FastifyReply) {
       const token = randomBytes(32).toString("hex");
 
       await db`
-      INSERT INTO sessions(user_id, token_hash, expires_at)
-      VALUES (
-        ${userId},
-        ${hash(token)},
-        now() + interval '7 days'
-      )
-    `;
+        INSERT INTO sessions(user_id, token_hash, expires_at)
+        VALUES (
+          ${userId},
+          ${hash(token)},
+          now() + interval '7 days'
+        )
+      `;
 
       reply.setCookie("session", token, {
         httpOnly: true,
@@ -506,7 +506,6 @@ export async function buildApp() {
         .email()
         .max(255)
         .transform((value) => value.toLowerCase()),
-
       password: z.string().min(8).max(128),
     });
 
@@ -535,21 +534,21 @@ export async function buildApp() {
         const pwd = await passwordHash(data.password);
 
         const rows = await db`
-        INSERT INTO users(
-          email,
-          password_hash,
-          full_name,
-          role
-        )
-        VALUES (
-          ${data.email},
-          ${pwd},
-          ${data.fullName},
-          ${data.role}
-        )
-        ON CONFLICT(email) DO NOTHING
-        RETURNING id, email, full_name, role
-      `;
+          INSERT INTO users(
+            email,
+            password_hash,
+            full_name,
+            role
+          )
+          VALUES (
+            ${data.email},
+            ${pwd},
+            ${data.fullName},
+            ${data.role}
+          )
+          ON CONFLICT(email) DO NOTHING
+          RETURNING id, email, full_name, role
+        `;
 
         if (!rows.length) {
           return reply.code(409).send({
@@ -577,16 +576,16 @@ export async function buildApp() {
         const data = credentials.parse(req.body);
 
         const rows = await db`
-        SELECT
-          id,
-          email,
-          full_name,
-          role,
-          password_hash
-        FROM users
-        WHERE email = ${data.email}
-        LIMIT 1
-      `;
+          SELECT
+            id,
+            email,
+            full_name,
+            role,
+            password_hash
+          FROM users
+          WHERE email = ${data.email}
+          LIMIT 1
+        `;
 
         if (
           !rows.length ||
@@ -601,9 +600,9 @@ export async function buildApp() {
 
         if (previousToken) {
           await db`
-          DELETE FROM sessions
-          WHERE token_hash = ${hash(previousToken)}
-        `;
+            DELETE FROM sessions
+            WHERE token_hash = ${hash(previousToken)}
+          `;
         }
 
         await newSession(rows[0].id, reply);
@@ -619,9 +618,9 @@ export async function buildApp() {
 
       if (token) {
         await db`
-        DELETE FROM sessions
-        WHERE token_hash = ${hash(token)}
-      `;
+          DELETE FROM sessions
+          WHERE token_hash = ${hash(token)}
+        `;
       }
 
       reply.clearCookie("session", {
@@ -768,12 +767,12 @@ export async function buildApp() {
         .parse(req.params);
 
       const rows = await db`
-      SELECT j.*, c.name AS company_name
-      FROM jobs j
-      JOIN companies c ON c.id = j.company_id
-      WHERE j.id = ${id}
-        AND j.status = 'published'
-    `;
+        SELECT j.*, c.name AS company_name
+        FROM jobs j
+        JOIN companies c ON c.id = j.company_id
+        WHERE j.id = ${id}
+          AND j.status = 'published'
+      `;
 
       return (
         rows[0] ??
@@ -800,18 +799,18 @@ export async function buildApp() {
         .parse(req.body);
 
       const rows = await db`
-      INSERT INTO companies(
-        name,
-        description,
-        owner_id
-      )
-      VALUES (
-        ${data.name},
-        ${data.description},
-        ${user.id}
-      )
-      RETURNING *
-    `;
+        INSERT INTO companies(
+          name,
+          description,
+          owner_id
+        )
+        VALUES (
+          ${data.name},
+          ${data.description},
+          ${user.id}
+        )
+        RETURNING *
+      `;
 
       return reply.code(201).send(rows[0]);
     });
@@ -822,11 +821,11 @@ export async function buildApp() {
       if (!user) return;
 
       return db`
-      SELECT *
-      FROM companies
-      WHERE owner_id = ${user.id}
-      ORDER BY created_at DESC
-    `;
+        SELECT *
+        FROM companies
+        WHERE owner_id = ${user.id}
+        ORDER BY created_at DESC
+      `;
     });
 
     // --------------------------------------------------
@@ -860,28 +859,28 @@ export async function buildApp() {
         .parse(req.body);
 
       const rows = await db`
-      INSERT INTO jobs(
-        company_id,
-        title,
-        description,
-        location,
-        type,
-        salary_min,
-        salary_max
-      )
-      SELECT
-        id,
-        ${data.title},
-        ${data.description},
-        ${data.location},
-        ${data.type},
-        ${data.salaryMin ?? null},
-        ${data.salaryMax ?? null}
-      FROM companies
-      WHERE id = ${data.companyId}
-        AND owner_id = ${user.id}
-      RETURNING *
-    `;
+        INSERT INTO jobs(
+          company_id,
+          title,
+          description,
+          location,
+          type,
+          salary_min,
+          salary_max
+        )
+        SELECT
+          id,
+          ${data.title},
+          ${data.description},
+          ${data.location},
+          ${data.type},
+          ${data.salaryMin ?? null},
+          ${data.salaryMax ?? null}
+        FROM companies
+        WHERE id = ${data.companyId}
+          AND owner_id = ${user.id}
+        RETURNING *
+      `;
 
       if (!rows.length) {
         return reply.code(403).send({
@@ -900,19 +899,19 @@ export async function buildApp() {
       if (!user) return;
 
       return db`
-      SELECT
-        j.*,
-        c.name AS company_name,
-        (
-          SELECT count(*)::int
-          FROM applications a
-          WHERE a.job_id = j.id
-        ) AS applicants
-      FROM jobs j
-      JOIN companies c ON c.id = j.company_id
-      WHERE c.owner_id = ${user.id}
-      ORDER BY j.created_at DESC
-    `;
+        SELECT
+          j.*,
+          c.name AS company_name,
+          (
+            SELECT count(*)::int
+            FROM applications a
+            WHERE a.job_id = j.id
+          ) AS applicants
+        FROM jobs j
+        JOIN companies c ON c.id = j.company_id
+        WHERE c.owner_id = ${user.id}
+        ORDER BY j.created_at DESC
+      `;
     });
 
     // --------------------------------------------------
@@ -937,27 +936,42 @@ export async function buildApp() {
         .parse(req.body);
 
       const rows = await db`
-      INSERT INTO applications(
-        job_id,
-        seeker_id,
-        cover_letter
-      )
-      SELECT
-        id,
-        ${user.id},
-        ${coverLetter}
-      FROM jobs
-      WHERE id = ${id}
-        AND status = 'published'
-      ON CONFLICT(job_id, seeker_id) DO NOTHING
-      RETURNING *
-    `;
+        INSERT INTO applications(
+          job_id,
+          seeker_id,
+          cover_letter
+        )
+        SELECT
+          id,
+          ${user.id},
+          ${coverLetter}
+        FROM jobs
+        WHERE id = ${id}
+          AND status = 'published'
+        ON CONFLICT(job_id, seeker_id) DO NOTHING
+        RETURNING *
+      `;
 
       if (!rows.length) {
         return reply.code(409).send({
           error: "Job unavailable or already applied",
         });
       }
+
+      await db`
+        INSERT INTO application_status_history (
+          application_id,
+          status,
+          changed_by,
+          note
+        )
+        VALUES (
+          ${rows[0].id},
+          'submitted',
+          ${user.id},
+          'Application submitted'
+        )
+      `;
 
       return reply.code(201).send(rows[0]);
     });
@@ -968,19 +982,19 @@ export async function buildApp() {
       if (!user) return;
 
       return db`
-      SELECT
-        a.id,
-        a.status,
-        a.created_at,
-        j.title,
-        j.location,
-        c.name AS company_name
-      FROM applications a
-      JOIN jobs j ON j.id = a.job_id
-      JOIN companies c ON c.id = j.company_id
-      WHERE a.seeker_id = ${user.id}
-      ORDER BY a.created_at DESC
-    `;
+        SELECT
+          a.id,
+          a.status,
+          a.created_at,
+          j.title,
+          j.location,
+          c.name AS company_name
+        FROM applications a
+        JOIN jobs j ON j.id = a.job_id
+        JOIN companies c ON c.id = j.company_id
+        WHERE a.seeker_id = ${user.id}
+        ORDER BY a.created_at DESC
+      `;
     });
 
     app.get("/employer/jobs/:id/applications", async (req, reply) => {
@@ -1012,6 +1026,51 @@ export async function buildApp() {
       `;
     });
 
+    // --------------------------------------------------
+    // Application tracking timeline
+    // --------------------------------------------------
+
+    app.get("/applications/:id/timeline", async (req, reply) => {
+      const user = await requireUser(req, reply);
+
+      if (!user) return;
+
+      const { id } = z
+        .object({
+          id: z.string().uuid(),
+        })
+        .parse(req.params);
+
+      const rows = await db`
+        SELECT
+          h.id,
+          h.application_id,
+          h.status,
+          h.note,
+          h.created_at,
+          u.full_name AS changed_by_name
+        FROM application_status_history h
+        JOIN applications a ON a.id = h.application_id
+        LEFT JOIN jobs j ON j.id = a.job_id
+        LEFT JOIN companies c ON c.id = j.company_id
+        LEFT JOIN users u ON u.id = h.changed_by
+        WHERE h.application_id = ${id}
+          AND (
+            a.seeker_id = ${user.id}
+            OR c.owner_id = ${user.id}
+          )
+        ORDER BY h.created_at ASC, h.id ASC
+      `;
+
+      if (!rows.length) {
+        return reply.code(404).send({
+          error: "Application not found or timeline unavailable",
+        });
+      }
+
+      return rows;
+    });
+
     app.patch("/employer/applications/:id", async (req, reply) => {
       const user = await requireUser(req, reply, "employer");
 
@@ -1029,23 +1088,69 @@ export async function buildApp() {
         })
         .parse(req.body);
 
-      const rows = await db`
-        UPDATE applications a
-        SET status = ${status}
-        FROM jobs j
-        JOIN companies c ON c.id = j.company_id
-        WHERE a.id = ${id}
-          AND a.job_id = j.id
-          AND c.owner_id = ${user.id}
-        RETURNING a.*
-      `;
+      const result = await db.begin(async (tx) => {
+        const applications = await tx`
+      SELECT
+        a.id,
+        a.status
+      FROM applications a
+      JOIN jobs j ON j.id = a.job_id
+      JOIN companies c ON c.id = j.company_id
+      WHERE a.id = ${id}
+        AND c.owner_id = ${user.id}
+      FOR UPDATE OF a
+    `;
 
-      return (
-        rows[0] ??
-        reply.code(404).send({
+        if (!applications.length) {
+          return { notFound: true as const };
+        }
+
+        const application = applications[0];
+
+        if (application.status === status) {
+          return {
+            notFound: false as const,
+            application,
+            changed: false,
+          };
+        }
+
+        const updated = await tx`
+      UPDATE applications
+      SET status = ${status}
+      WHERE id = ${id}
+      RETURNING *
+    `;
+
+        await tx`
+      INSERT INTO application_status_history (
+        application_id,
+        status,
+        changed_by,
+        note
+      )
+      VALUES (
+        ${id},
+        ${status},
+        ${user.id},
+        ${"Status changed from " + application.status + " to " + status}
+      )
+    `;
+
+        return {
+          notFound: false as const,
+          application: updated[0],
+          changed: true,
+        };
+      });
+
+      if (result.notFound) {
+        return reply.code(404).send({
           error: "Application not found",
-        })
-      );
+        });
+      }
+
+      return result.application;
     });
 
     // --------------------------------------------------
@@ -1067,22 +1172,22 @@ export async function buildApp() {
         .parse(req.body);
 
       const rows = await db`
-      UPDATE users
-      SET
-        full_name = ${data.fullName},
-        headline = ${data.headline},
-        location = ${data.location},
-        bio = ${data.bio}
-      WHERE id = ${user.id}
-      RETURNING
-        id,
-        email,
-        full_name,
-        role,
-        headline,
-        location,
-        bio
-    `;
+        UPDATE users
+        SET
+          full_name = ${data.fullName},
+          headline = ${data.headline},
+          location = ${data.location},
+          bio = ${data.bio}
+        WHERE id = ${user.id}
+        RETURNING
+          id,
+          email,
+          full_name,
+          role,
+          headline,
+          location,
+          bio
+      `;
 
       return rows[0];
     });
@@ -1093,17 +1198,17 @@ export async function buildApp() {
       if (!user) return;
 
       const rows = await db`
-      SELECT
-        id,
-        email,
-        full_name,
-        role,
-        headline,
-        location,
-        bio
-      FROM users
-      WHERE id = ${user.id}
-    `;
+        SELECT
+          id,
+          email,
+          full_name,
+          role,
+          headline,
+          location,
+          bio
+        FROM users
+        WHERE id = ${user.id}
+      `;
 
       return rows[0];
     });
@@ -1118,23 +1223,23 @@ export async function buildApp() {
       if (!user) return;
 
       return db`
-      SELECT
-        j.id,
-        j.title,
-        j.description,
-        j.location,
-        j.type,
-        j.salary_min,
-        j.salary_max,
-        j.created_at,
-        c.name AS company_name
-      FROM saved_jobs s
-      JOIN jobs j ON j.id = s.job_id
-      JOIN companies c ON c.id = j.company_id
-      WHERE s.user_id = ${user.id}
-        AND j.status = 'published'
-      ORDER BY j.created_at DESC
-    `;
+        SELECT
+          j.id,
+          j.title,
+          j.description,
+          j.location,
+          j.type,
+          j.salary_min,
+          j.salary_max,
+          j.created_at,
+          c.name AS company_name
+        FROM saved_jobs s
+        JOIN jobs j ON j.id = s.job_id
+        JOIN companies c ON c.id = j.company_id
+        WHERE s.user_id = ${user.id}
+          AND j.status = 'published'
+        ORDER BY j.created_at DESC
+      `;
     });
 
     app.put("/saved-jobs/:id", async (req, reply) => {
@@ -1149,26 +1254,26 @@ export async function buildApp() {
         .parse(req.params);
 
       const rows = await db`
-      INSERT INTO saved_jobs(user_id, job_id)
-      SELECT
-        ${user.id},
-        id
-      FROM jobs
-      WHERE id = ${id}
-        AND status = 'published'
-      ON CONFLICT DO NOTHING
-      RETURNING job_id
-    `;
+        INSERT INTO saved_jobs(user_id, job_id)
+        SELECT
+          ${user.id},
+          id
+        FROM jobs
+        WHERE id = ${id}
+          AND status = 'published'
+        ON CONFLICT DO NOTHING
+        RETURNING job_id
+      `;
 
       if (!rows.length) {
         const existing = await db`
-        SELECT 1
-        FROM saved_jobs s
-        JOIN jobs j ON j.id = s.job_id
-        WHERE s.user_id = ${user.id}
-          AND s.job_id = ${id}
-          AND j.status = 'published'
-      `;
+          SELECT 1
+          FROM saved_jobs s
+          JOIN jobs j ON j.id = s.job_id
+          WHERE s.user_id = ${user.id}
+            AND s.job_id = ${id}
+            AND j.status = 'published'
+        `;
 
         if (!existing.length) {
           return reply.code(404).send({
@@ -1192,10 +1297,10 @@ export async function buildApp() {
         .parse(req.params);
 
       await db`
-      DELETE FROM saved_jobs
-      WHERE user_id = ${user.id}
-        AND job_id = ${id}
-    `;
+        DELETE FROM saved_jobs
+        WHERE user_id = ${user.id}
+          AND job_id = ${id}
+      `;
 
       return { ok: true };
     });
@@ -1222,14 +1327,14 @@ export async function buildApp() {
         .parse(req.body);
 
       const rows = await db`
-      UPDATE jobs j
-      SET status = ${status}
-      FROM companies c
-      WHERE j.id = ${id}
-        AND c.id = j.company_id
-        AND c.owner_id = ${user.id}
-      RETURNING j.*
-    `;
+        UPDATE jobs j
+        SET status = ${status}
+        FROM companies c
+        WHERE j.id = ${id}
+          AND c.id = j.company_id
+          AND c.owner_id = ${user.id}
+        RETURNING j.*
+      `;
 
       if (!rows.length) {
         return reply.code(404).send({
@@ -1239,12 +1344,6 @@ export async function buildApp() {
 
       return rows[0];
     });
-
-    // --------------------------------------------------
-    // Graceful shutdown
-    // --------------------------------------------------
-
-    // Graceful shutdown
 
     // --------------------------------------------------
     // Graceful shutdown

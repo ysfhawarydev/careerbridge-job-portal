@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api, User, Job } from "../../lib/api";
+import ApplicationTimeline from "./ApplicationTimeline";
 
 type Company = {
   id: string;
@@ -1072,6 +1073,9 @@ export default function Dashboard() {
                             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold capitalize text-blue-700">
                               {application.status}
                             </span>
+                            <ApplicationTimeline
+                              applicationId={application.id}
+                            />
                           </div>
                         ))}
                       </div>
