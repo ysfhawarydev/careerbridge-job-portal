@@ -1,11 +1,209 @@
-'use client';
-import {useEffect,useState,use} from 'react';
-import Link from 'next/link';
-import {api,Job} from '../../../lib/api';
-export default function JobPage({params}:{params:Promise<{id:string}>}){
- const {id}=use(params),[job,setJob]=useState<Job|null>(null),[coverLetter,setCoverLetter]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState(''),[saved,setSaved]=useState(false),[busy,setBusy]=useState(false);
- useEffect(()=>{api<Job>('/jobs/'+id).then(setJob).catch(e=>setError(e.message))},[id]);
- async function save(){setError('');try{await api('/saved-jobs/'+id,{method:'PUT'});setSaved(true);setMessage('Saved to your dashboard')}catch(e){setError(e instanceof Error?e.message:'Unable to save job')}}
- async function apply(){setBusy(true);setError('');try{await api('/jobs/'+id+'/apply',{method:'POST',body:JSON.stringify({coverLetter})});setMessage('Application submitted successfully!');setError('')}catch(e:any){setError(e.message+' — Sign in as a job seeker to apply.')}finally{setBusy(false)}} 
- return <main className="max-w-4xl mx-auto px-5 py-12"><Link href="/" className="text-blue-600">← All jobs</Link>{error&&<p role="alert" className="mt-4 text-red-600">{error}</p>}{!job?<p className="mt-8">Loading…</p>:<div className="card mt-6"><p className="text-blue-600 font-semibold">{job.company_name}</p><h1 className="text-3xl font-bold mt-2">{job.title}</h1><p className="text-slate-500 mt-3">{job.location} · {job.type}</p><button type="button" onClick={save} disabled={saved} className="btn-secondary mt-6">{saved?"Saved ✓":"Save job for later"}</button><h2 className="font-bold text-xl mt-10 mb-3">About the role</h2><p className="whitespace-pre-wrap text-slate-700">{job.description}</p><div className="border-t mt-9 pt-7"><h2 className="text-xl font-bold mb-3">Apply for this role</h2><label className="label">Cover letter (optional)</label><textarea rows={5} maxLength={5000} value={coverLetter} onChange={e=>setCoverLetter(e.target.value)} placeholder="Tell the employer why you're a good fit"/>{message&&<p className="text-green-700 mt-3">{message}</p>}<button onClick={apply} disabled={busy||!!message} className="btn mt-4">{busy?"Submitting…":"Submit application"}</button></div></div>}</main>
+"use client";
+
+import { use, useEffect, useState } from "react";
+import Link from "next/link";
+import { api, Job } from "../../../lib/api";
+
+export default function JobPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = use(params);
+
+  const [job, setJob] = useState<Job | null>(null);
+  const [coverLetter, setCoverLetter] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadJob() {
+      setError("");
+
+      try {
+        const result = await api<Job>(`/jobs/${id}`);
+
+        if (!cancelled) {
+          setJob(result);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Unable to load job");
+        }
+      }
+    }
+
+    async function loadSavedState() {
+      try {
+        const result = await api<{ user: { role: string } | null }>("/auth/me");
+
+        if (cancelled || !result.user) {
+          return;
+        }
+
+        if (result.user.role !== "seeker") {
+          return;
+        }
+
+        setAuthenticated(true);
+
+        const savedJobs = await api<Job[]>("/saved-jobs");
+
+        if (!cancelled) {
+          setSaved(savedJobs.some((savedJob) => savedJob.id === id));
+        }
+      } catch {
+        // Browsing remains available when the visitor is signed out.
+      }
+    }
+
+    void loadJob();
+    void loadSavedState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  async function toggleSaved() {
+    if (saving) {
+      return;
+    }
+
+    setError("");
+    setMessage("");
+
+    if (!authenticated) {
+      setError("Sign in as a job seeker to save jobs.");
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      if (saved) {
+        await api(`/saved-jobs/${id}`, { method: "DELETE" });
+        setSaved(false);
+        setMessage("Job removed from your saved jobs.");
+      } else {
+        await api(`/saved-jobs/${id}`, { method: "PUT" });
+        setSaved(true);
+        setMessage("Job saved to your dashboard.");
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unable to update saved job",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function apply() {
+    setBusy(true);
+    setError("");
+    setMessage("");
+
+    try {
+      await api(`/jobs/${id}/apply`, {
+        method: "POST",
+        body: JSON.stringify({ coverLetter }),
+      });
+
+      setMessage("Application submitted successfully!");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unable to submit application",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="mx-auto max-w-4xl px-5 py-12">
+      <Link href="/" className="text-blue-600">
+        ← All jobs
+      </Link>
+
+      {error && (
+        <p role="alert" className="mt-4 text-red-600">
+          {error}
+        </p>
+      )}
+
+      {message && (
+        <p role="status" className="mt-4 text-green-700">
+          {message}
+        </p>
+      )}
+
+      {!job ? (
+        <p className="mt-8">
+          {error ? "Unable to load this job." : "Loading…"}
+        </p>
+      ) : (
+        <div className="card mt-6">
+          <p className="font-semibold text-blue-600">{job.company_name}</p>
+
+          <h1 className="mt-2 text-3xl font-bold">{job.title}</h1>
+
+          <p className="mt-3 text-slate-500">
+            {job.location} · {job.type}
+          </p>
+
+          <button
+            type="button"
+            onClick={toggleSaved}
+            disabled={saving}
+            className="btn-secondary mt-6"
+          >
+            {saving
+              ? "Updating…"
+              : saved
+                ? "Remove saved job"
+                : "Save job for later"}
+          </button>
+
+          <h2 className="mb-3 mt-10 text-xl font-bold">About the role</h2>
+
+          <p className="whitespace-pre-wrap text-slate-700">
+            {job.description}
+          </p>
+
+          <div className="mt-9 border-t pt-7">
+            <h2 className="mb-3 text-xl font-bold">Apply for this role</h2>
+
+            <label htmlFor="cover-letter" className="label">
+              Cover letter (optional)
+            </label>
+
+            <textarea
+              id="cover-letter"
+              rows={5}
+              maxLength={5000}
+              value={coverLetter}
+              onChange={(event) => setCoverLetter(event.target.value)}
+              placeholder="Tell the employer why you're a good fit"
+            />
+
+            <button
+              type="button"
+              onClick={apply}
+              disabled={busy}
+              className="btn mt-4"
+            >
+              {busy ? "Submitting…" : "Submit application"}
+            </button>
+          </div>
+        </div>
+      )}
+    </main>
+  );
 }
