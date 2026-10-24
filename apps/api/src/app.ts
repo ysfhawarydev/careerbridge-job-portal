@@ -416,15 +416,21 @@ export async function buildApp() {
         .object({
           q: z.string().max(100).optional(),
           location: z.string().max(100).optional(),
+          type: z
+            .enum(["full-time", "part-time", "contract", "internship"])
+            .optional(),
+          sort: z
+            .enum(["newest", "salary-asc", "salary-desc"])
+            .default("newest"),
           limit: z.coerce.number().int().min(1).max(50).default(12),
           page: z.coerce.number().int().min(1).max(10000).default(1),
         })
         .parse(req.query);
 
       const offset = (query.page - 1) * query.limit;
-
       const q = query.q?.trim() ?? "";
       const loc = query.location?.trim() ?? "";
+      const type = query.type ?? "";
 
       const key =
         "jobs:" +
@@ -432,6 +438,8 @@ export async function buildApp() {
           JSON.stringify({
             q,
             loc,
+            type,
+            sort: query.sort,
             offset,
             limit: query.limit,
           }),
@@ -443,39 +451,58 @@ export async function buildApp() {
         return JSON.parse(cached);
       }
 
-      const jobs = await db`
-      SELECT
-        j.id,
-        j.title,
-        j.description,
-        j.location,
-        j.type,
-        j.salary_min,
-        j.salary_max,
-        j.created_at,
-        c.name AS company_name
-      FROM jobs j
-      JOIN companies c ON c.id = j.company_id
-      WHERE j.status = 'published'
-        AND (
-          ${q} = ''
-          OR to_tsvector(
-            'english',
-            j.title || ' ' || j.description
-          ) @@ plainto_tsquery('english', ${q})
-        )
-        AND (
-          ${loc} = ''
-          OR j.location ILIKE ${"%" + loc + "%"}
-        )
-      ORDER BY j.created_at DESC, j.id DESC
-      LIMIT ${query.limit}
-      OFFSET ${offset}
-    `;
+      const rows = await db`
+        SELECT
+          j.id,
+          j.title,
+          j.description,
+          j.location,
+          j.type,
+          j.salary_min,
+          j.salary_max,
+          j.created_at,
+          c.name AS company_name
+        FROM jobs j
+        JOIN companies c ON c.id = j.company_id
+        WHERE j.status = 'published'
+          AND (
+            ${q} = ''
+            OR to_tsvector(
+              'english',
+              j.title || ' ' || j.description
+            ) @@ plainto_tsquery('english', ${q})
+          )
+          AND (
+            ${loc} = ''
+            OR j.location ILIKE ${"%" + loc + "%"}
+          )
+          AND (
+            ${type} = ''
+            OR j.type = ${type}
+          )
+        ORDER BY
+          CASE
+            WHEN ${query.sort} = 'salary-asc'
+            THEN j.salary_min
+          END ASC NULLS LAST,
+          CASE
+            WHEN ${query.sort} = 'salary-desc'
+            THEN j.salary_max
+          END DESC NULLS LAST,
+          j.created_at DESC,
+          j.id DESC
+        LIMIT ${query.limit + 1}
+        OFFSET ${offset}
+      `;
+
+      const hasMore = rows.length > query.limit;
+      const jobs = rows.slice(0, query.limit);
 
       const result = {
         jobs,
         page: query.page,
+        limit: query.limit,
+        hasMore,
       };
 
       await redis.set(key, JSON.stringify(result), {
