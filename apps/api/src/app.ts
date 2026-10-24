@@ -24,150 +24,175 @@ import { isTrustedOrigin } from "./security.js";
 import { loggerOptions } from "./logger.js";
 import { checkReadiness } from "./readiness.js";
 import { parseConfig } from "./config.js";
+import { cleanupStartupResources } from "./startup-cleanup.js";
 
 const scrypt = promisify(scryptCb);
 
 export async function buildApp() {
-  // Validate configuration before opening external connections.
   const env = parseConfig();
+  const cleanup: Array<() => void | Promise<void>> = [];
 
-  const db = postgres(env.DATABASE_URL, { max: 15 });
+  try {
+    const db = postgres(env.DATABASE_URL, { max: 15 });
+    cleanup.push(() => db.end({ timeout: 5 }));
 
-  const redisUrl = env.REDIS_URL;
+    const redisUrl = env.REDIS_URL;
+    const redis = createClient({ url: redisUrl });
 
-  // Existing Redis client for job caching.
-  const redis = createClient({ url: redisUrl });
+    redis.on("error", (error) => {
+      console.error("Redis:", error.message);
+    });
 
-  redis.on("error", (error) => {
-    console.error("Redis:", error.message);
-  });
+    cleanup.push(async () => {
+      if (redis.isOpen) {
+        await redis.quit();
+      } else {
+        redis.disconnect();
+      }
+    });
 
-  await redis.connect();
+    await redis.connect();
 
-  // Dedicated ioredis client for shared rate limiting.
-  const rateLimitRedis = new Redis(redisUrl, {
-    maxRetriesPerRequest: 1,
-    enableOfflineQueue: false,
-    lazyConnect: true,
-  });
+    const rateLimitRedis = new Redis(redisUrl, {
+      maxRetriesPerRequest: 1,
+      enableOfflineQueue: false,
+      lazyConnect: true,
+    });
 
-  rateLimitRedis.on("error", (error: Error) => {
-    console.error("Rate-limit Redis:", error.message);
-  });
+    rateLimitRedis.on("error", (error: Error) => {
+      console.error("Rate-limit Redis:", error.message);
+    });
 
-  await rateLimitRedis.connect();
+    cleanup.push(async () => {
+      if (rateLimitRedis.status === "end") {
+        return;
+      }
 
-  const app = Fastify({
-    logger: loggerOptions,
-    trustProxy: false,
-  });
+      if (rateLimitRedis.status === "wait") {
+        rateLimitRedis.disconnect();
+        return;
+      }
 
-  app.addHook("onRequest", async (request, reply) => {
-    reply.header("x-request-id", request.id);
-  });
+      await rateLimitRedis.quit();
+    });
 
-  await app.register(cors, {
-    origin: env.WEB_ORIGIN,
-    credentials: true,
-  });
+    await rateLimitRedis.connect();
 
-  await app.register(cookie);
-  await app.register(helmet);
+    const app = Fastify({
+      logger: loggerOptions,
+      trustProxy: false,
+    });
 
-  await app.register(rateLimit, {
-    max: 100,
-    timeWindow: "1 minute",
-    redis: rateLimitRedis,
-    nameSpace: env.RATE_LIMIT_NAMESPACE,
-  });
+    // Keep every existing hook, plugin, helper, and route here.
 
-  const allowedOrigin = env.WEB_ORIGIN;
+    // Keep every existing hook, plugin, helper, and route here.
 
-  app.addHook("preHandler", async (req, reply) => {
-    if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
-      return;
-    }
+    app.addHook("onRequest", async (request, reply) => {
+      reply.header("x-request-id", request.id);
+    });
 
-    if (
-      !isTrustedOrigin(req.headers.origin, req.headers.referer, allowedOrigin)
-    ) {
-      return reply.code(403).send({
-        error: "Trusted origin required",
-      });
-    }
-  });
+    await app.register(cors, {
+      origin: env.WEB_ORIGIN,
+      credentials: true,
+    });
 
-  app.setErrorHandler((error: unknown, request, reply) => {
-    const isError = error instanceof Error;
+    await app.register(cookie);
+    await app.register(helmet);
 
-    const rawStatus =
-      error !== null && typeof error === "object" && "statusCode" in error
-        ? Number(error.statusCode)
-        : 500;
+    await app.register(rateLimit, {
+      max: 100,
+      timeWindow: "1 minute",
+      redis: rateLimitRedis,
+      nameSpace: env.RATE_LIMIT_NAMESPACE,
+    });
 
-    const status =
-      error instanceof ZodError
-        ? 400
-        : Number.isInteger(rawStatus) && rawStatus >= 400 && rawStatus <= 599
-          ? rawStatus
+    const allowedOrigin = env.WEB_ORIGIN;
+
+    app.addHook("preHandler", async (req, reply) => {
+      if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
+        return;
+      }
+
+      if (
+        !isTrustedOrigin(req.headers.origin, req.headers.referer, allowedOrigin)
+      ) {
+        return reply.code(403).send({
+          error: "Trusted origin required",
+        });
+      }
+    });
+
+    app.setErrorHandler((error: unknown, request, reply) => {
+      const isError = error instanceof Error;
+
+      const rawStatus =
+        error !== null && typeof error === "object" && "statusCode" in error
+          ? Number(error.statusCode)
           : 500;
 
-    const message =
-      status >= 500
-        ? "Internal server error"
-        : isError
-          ? error.message
-          : "Request failed";
+      const status =
+        error instanceof ZodError
+          ? 400
+          : Number.isInteger(rawStatus) && rawStatus >= 400 && rawStatus <= 599
+            ? rawStatus
+            : 500;
 
-    if (status >= 500) {
-      request.log.error({ err: error }, "Request failed");
-    } else {
-      request.log.warn({ err: error, status }, "Request rejected");
-    }
+      const message =
+        status >= 500
+          ? "Internal server error"
+          : isError
+            ? error.message
+            : "Request failed";
 
-    return reply.code(status).send({
-      error: message,
-      requestId: request.id,
+      if (status >= 500) {
+        request.log.error({ err: error }, "Request failed");
+      } else {
+        request.log.warn({ err: error, status }, "Request rejected");
+      }
+
+      return reply.code(status).send({
+        error: message,
+        requestId: request.id,
+      });
     });
-  });
 
-  const hash = (value: string) =>
-    createHash("sha256").update(value).digest("hex");
+    const hash = (value: string) =>
+      createHash("sha256").update(value).digest("hex");
 
-  async function passwordHash(password: string) {
-    const salt = randomBytes(16).toString("hex");
-    const key = (await scrypt(password, salt, 64)) as Buffer;
+    async function passwordHash(password: string) {
+      const salt = randomBytes(16).toString("hex");
+      const key = (await scrypt(password, salt, 64)) as Buffer;
 
-    return salt + ":" + key.toString("hex");
-  }
-
-  async function verify(password: string, stored: string) {
-    const [salt, hex] = stored.split(":");
-
-    if (!salt || !hex || hex.length !== 128) {
-      return false;
+      return salt + ":" + key.toString("hex");
     }
 
-    const key = (await scrypt(password, salt, 64)) as Buffer;
+    async function verify(password: string, stored: string) {
+      const [salt, hex] = stored.split(":");
 
-    return timingSafeEqual(key, Buffer.from(hex, "hex"));
-  }
+      if (!salt || !hex || hex.length !== 128) {
+        return false;
+      }
 
-  type User = {
-    id: string;
-    email: string;
-    full_name: string;
-    role: "seeker" | "employer" | "admin";
-  };
+      const key = (await scrypt(password, salt, 64)) as Buffer;
 
-  async function currentUser(req: FastifyRequest): Promise<User | null> {
-    const token = req.cookies?.session;
-
-    if (typeof token !== "string" || !token) {
-      return null;
+      return timingSafeEqual(key, Buffer.from(hex, "hex"));
     }
 
-    const rows = await db<User[]>`
+    type User = {
+      id: string;
+      email: string;
+      full_name: string;
+      role: "seeker" | "employer" | "admin";
+    };
+
+    async function currentUser(req: FastifyRequest): Promise<User | null> {
+      const token = req.cookies?.session;
+
+      if (typeof token !== "string" || !token) {
+        return null;
+      }
+
+      const rows = await db<User[]>`
       SELECT u.id, u.email, u.full_name, u.role
       FROM sessions s
       JOIN users u ON u.id = s.user_id
@@ -176,39 +201,39 @@ export async function buildApp() {
       LIMIT 1
     `;
 
-    return rows[0] ?? null;
-  }
-
-  async function requireUser(
-    req: FastifyRequest,
-    reply: FastifyReply,
-    role?: User["role"],
-  ) {
-    const user = await currentUser(req);
-
-    if (!user) {
-      reply.code(401).send({
-        error: "Authentication required",
-      });
-
-      return null;
+      return rows[0] ?? null;
     }
 
-    if (role && user.role !== role) {
-      reply.code(403).send({
-        error: "Forbidden",
-      });
+    async function requireUser(
+      req: FastifyRequest,
+      reply: FastifyReply,
+      role?: User["role"],
+    ) {
+      const user = await currentUser(req);
 
-      return null;
+      if (!user) {
+        reply.code(401).send({
+          error: "Authentication required",
+        });
+
+        return null;
+      }
+
+      if (role && user.role !== role) {
+        reply.code(403).send({
+          error: "Forbidden",
+        });
+
+        return null;
+      }
+
+      return user;
     }
 
-    return user;
-  }
+    async function newSession(userId: string, reply: FastifyReply) {
+      const token = randomBytes(32).toString("hex");
 
-  async function newSession(userId: string, reply: FastifyReply) {
-    const token = randomBytes(32).toString("hex");
-
-    await db`
+      await db`
       INSERT INTO sessions(user_id, token_hash, expires_at)
       VALUES (
         ${userId},
@@ -217,50 +242,50 @@ export async function buildApp() {
       )
     `;
 
-    reply.setCookie("session", token, {
-      httpOnly: true,
-      secure: env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 604800,
+      reply.setCookie("session", token, {
+        httpOnly: true,
+        secure: env.NODE_ENV === "production",
+        sameSite: "lax",
+        path: "/",
+        maxAge: 604800,
+      });
+    }
+
+    const credentials = z.object({
+      email: z
+        .string()
+        .email()
+        .max(255)
+        .transform((value) => value.toLowerCase()),
+
+      password: z.string().min(8).max(128),
     });
-  }
 
-  const credentials = z.object({
-    email: z
-      .string()
-      .email()
-      .max(255)
-      .transform((value) => value.toLowerCase()),
+    // --------------------------------------------------
+    // Authentication
+    // --------------------------------------------------
 
-    password: z.string().min(8).max(128),
-  });
-
-  // --------------------------------------------------
-  // Authentication
-  // --------------------------------------------------
-
-  app.post(
-    "/auth/register",
-    {
-      config: {
-        rateLimit: {
-          max: 10,
-          timeWindow: "1 minute",
+    app.post(
+      "/auth/register",
+      {
+        config: {
+          rateLimit: {
+            max: 10,
+            timeWindow: "1 minute",
+          },
         },
       },
-    },
-    async (req, reply) => {
-      const data = credentials
-        .extend({
-          fullName: z.string().min(2).max(120),
-          role: z.enum(["seeker", "employer"]),
-        })
-        .parse(req.body);
+      async (req, reply) => {
+        const data = credentials
+          .extend({
+            fullName: z.string().min(2).max(120),
+            role: z.enum(["seeker", "employer"]),
+          })
+          .parse(req.body);
 
-      const pwd = await passwordHash(data.password);
+        const pwd = await passwordHash(data.password);
 
-      const rows = await db`
+        const rows = await db`
         INSERT INTO users(
           email,
           password_hash,
@@ -277,32 +302,32 @@ export async function buildApp() {
         RETURNING id, email, full_name, role
       `;
 
-      if (!rows.length) {
-        return reply.code(409).send({
-          error: "Email already registered",
-        });
-      }
+        if (!rows.length) {
+          return reply.code(409).send({
+            error: "Email already registered",
+          });
+        }
 
-      await newSession(rows[0].id, reply);
+        await newSession(rows[0].id, reply);
 
-      return { user: rows[0] };
-    },
-  );
+        return { user: rows[0] };
+      },
+    );
 
-  app.post(
-    "/auth/login",
-    {
-      config: {
-        rateLimit: {
-          max: 10,
-          timeWindow: "1 minute",
+    app.post(
+      "/auth/login",
+      {
+        config: {
+          rateLimit: {
+            max: 10,
+            timeWindow: "1 minute",
+          },
         },
       },
-    },
-    async (req, reply) => {
-      const data = credentials.parse(req.body);
+      async (req, reply) => {
+        const data = credentials.parse(req.body);
 
-      const rows = await db`
+        const rows = await db`
         SELECT
           id,
           email,
@@ -314,110 +339,110 @@ export async function buildApp() {
         LIMIT 1
       `;
 
-      if (
-        !rows.length ||
-        !(await verify(data.password, rows[0].password_hash))
-      ) {
-        return reply.code(401).send({
-          error: "Invalid credentials",
-        });
-      }
+        if (
+          !rows.length ||
+          !(await verify(data.password, rows[0].password_hash))
+        ) {
+          return reply.code(401).send({
+            error: "Invalid credentials",
+          });
+        }
 
-      const previousToken = req.cookies.session;
+        const previousToken = req.cookies.session;
 
-      if (previousToken) {
-        await db`
+        if (previousToken) {
+          await db`
           DELETE FROM sessions
           WHERE token_hash = ${hash(previousToken)}
         `;
-      }
+        }
 
-      await newSession(rows[0].id, reply);
+        await newSession(rows[0].id, reply);
 
-      const { password_hash, ...user } = rows[0];
+        const { password_hash, ...user } = rows[0];
 
-      return { user };
-    },
-  );
-
-  app.post("/auth/logout", async (req, reply) => {
-    const token = req.cookies.session;
-
-    if (token) {
-      await db`
-        DELETE FROM sessions
-        WHERE token_hash = ${hash(token)}
-      `;
-    }
-
-    reply.clearCookie("session", {
-      path: "/",
-    });
-
-    return { ok: true };
-  });
-
-  app.get("/auth/me", async (req) => ({
-    user: await currentUser(req),
-  }));
-
-  // --------------------------------------------------
-  // Health and readiness
-  // --------------------------------------------------
-
-  app.get("/health", async () => ({
-    ok: true,
-  }));
-
-  app.get("/ready", async (_request, reply) => {
-    const result = await checkReadiness(
-      () => db`SELECT 1`,
-      () => redis.ping(),
-      {
-        timeoutMs: env.READINESS_TIMEOUT_MS,
+        return { user };
       },
     );
 
-    return reply.code(result.ok ? 200 : 503).send(result);
-  });
+    app.post("/auth/logout", async (req, reply) => {
+      const token = req.cookies.session;
 
-  // --------------------------------------------------
-  // Public jobs
-  // --------------------------------------------------
+      if (token) {
+        await db`
+        DELETE FROM sessions
+        WHERE token_hash = ${hash(token)}
+      `;
+      }
 
-  app.get("/jobs", async (req) => {
-    const query = z
-      .object({
-        q: z.string().max(100).optional(),
-        location: z.string().max(100).optional(),
-        limit: z.coerce.number().int().min(1).max(50).default(12),
-        page: z.coerce.number().int().min(1).max(10000).default(1),
-      })
-      .parse(req.query);
+      reply.clearCookie("session", {
+        path: "/",
+      });
 
-    const offset = (query.page - 1) * query.limit;
+      return { ok: true };
+    });
 
-    const q = query.q?.trim() ?? "";
-    const loc = query.location?.trim() ?? "";
+    app.get("/auth/me", async (req) => ({
+      user: await currentUser(req),
+    }));
 
-    const key =
-      "jobs:" +
-      hash(
-        JSON.stringify({
-          q,
-          loc,
-          offset,
-          limit: query.limit,
-        }),
+    // --------------------------------------------------
+    // Health and readiness
+    // --------------------------------------------------
+
+    app.get("/health", async () => ({
+      ok: true,
+    }));
+
+    app.get("/ready", async (_request, reply) => {
+      const result = await checkReadiness(
+        () => db`SELECT 1`,
+        () => redis.ping(),
+        {
+          timeoutMs: env.READINESS_TIMEOUT_MS,
+        },
       );
 
-    const cached = await redis.get(key);
+      return reply.code(result.ok ? 200 : 503).send(result);
+    });
 
-    if (cached) {
-      return JSON.parse(cached);
-    }
+    // --------------------------------------------------
+    // Public jobs
+    // --------------------------------------------------
 
-    const jobs = await db`
+    app.get("/jobs", async (req) => {
+      const query = z
+        .object({
+          q: z.string().max(100).optional(),
+          location: z.string().max(100).optional(),
+          limit: z.coerce.number().int().min(1).max(50).default(12),
+          page: z.coerce.number().int().min(1).max(10000).default(1),
+        })
+        .parse(req.query);
+
+      const offset = (query.page - 1) * query.limit;
+
+      const q = query.q?.trim() ?? "";
+      const loc = query.location?.trim() ?? "";
+
+      const key =
+        "jobs:" +
+        hash(
+          JSON.stringify({
+            q,
+            loc,
+            offset,
+            limit: query.limit,
+          }),
+        );
+
+      const cached = await redis.get(key);
+
+      if (cached) {
+        return JSON.parse(cached);
+      }
+
+      const jobs = await db`
       SELECT
         j.id,
         j.title,
@@ -447,26 +472,26 @@ export async function buildApp() {
       OFFSET ${offset}
     `;
 
-    const result = {
-      jobs,
-      page: query.page,
-    };
+      const result = {
+        jobs,
+        page: query.page,
+      };
 
-    await redis.set(key, JSON.stringify(result), {
-      EX: 20,
+      await redis.set(key, JSON.stringify(result), {
+        EX: 20,
+      });
+
+      return result;
     });
 
-    return result;
-  });
+    app.get("/jobs/:id", async (req, reply) => {
+      const { id } = z
+        .object({
+          id: z.string().uuid(),
+        })
+        .parse(req.params);
 
-  app.get("/jobs/:id", async (req, reply) => {
-    const { id } = z
-      .object({
-        id: z.string().uuid(),
-      })
-      .parse(req.params);
-
-    const rows = await db`
+      const rows = await db`
       SELECT j.*, c.name AS company_name
       FROM jobs j
       JOIN companies c ON c.id = j.company_id
@@ -474,31 +499,31 @@ export async function buildApp() {
         AND j.status = 'published'
     `;
 
-    return (
-      rows[0] ??
-      reply.code(404).send({
-        error: "Job not found",
-      })
-    );
-  });
+      return (
+        rows[0] ??
+        reply.code(404).send({
+          error: "Job not found",
+        })
+      );
+    });
 
-  // --------------------------------------------------
-  // Companies
-  // --------------------------------------------------
+    // --------------------------------------------------
+    // Companies
+    // --------------------------------------------------
 
-  app.post("/companies", async (req, reply) => {
-    const user = await requireUser(req, reply, "employer");
+    app.post("/companies", async (req, reply) => {
+      const user = await requireUser(req, reply, "employer");
 
-    if (!user) return;
+      if (!user) return;
 
-    const data = z
-      .object({
-        name: z.string().min(2).max(150),
-        description: z.string().max(5000).default(""),
-      })
-      .parse(req.body);
+      const data = z
+        .object({
+          name: z.string().min(2).max(150),
+          description: z.string().max(5000).default(""),
+        })
+        .parse(req.body);
 
-    const rows = await db`
+      const rows = await db`
       INSERT INTO companies(
         name,
         description,
@@ -512,53 +537,53 @@ export async function buildApp() {
       RETURNING *
     `;
 
-    return reply.code(201).send(rows[0]);
-  });
+      return reply.code(201).send(rows[0]);
+    });
 
-  app.get("/companies/mine", async (req, reply) => {
-    const user = await requireUser(req, reply, "employer");
+    app.get("/companies/mine", async (req, reply) => {
+      const user = await requireUser(req, reply, "employer");
 
-    if (!user) return;
+      if (!user) return;
 
-    return db`
+      return db`
       SELECT *
       FROM companies
       WHERE owner_id = ${user.id}
       ORDER BY created_at DESC
     `;
-  });
+    });
 
-  // --------------------------------------------------
-  // Employer jobs
-  // --------------------------------------------------
+    // --------------------------------------------------
+    // Employer jobs
+    // --------------------------------------------------
 
-  app.post("/jobs", async (req, reply) => {
-    const user = await requireUser(req, reply, "employer");
+    app.post("/jobs", async (req, reply) => {
+      const user = await requireUser(req, reply, "employer");
 
-    if (!user) return;
+      if (!user) return;
 
-    const data = z
-      .object({
-        companyId: z.string().uuid(),
-        title: z.string().min(3).max(200),
-        description: z.string().min(20).max(20000),
-        location: z.string().min(2).max(150),
-        type: z.enum(["full-time", "part-time", "contract", "internship"]),
-        salaryMin: z.number().int().nonnegative().nullable().optional(),
-        salaryMax: z.number().int().nonnegative().nullable().optional(),
-      })
-      .refine(
-        (value) =>
-          value.salaryMin == null ||
-          value.salaryMax == null ||
-          value.salaryMin <= value.salaryMax,
-        {
-          message: "Invalid salary range",
-        },
-      )
-      .parse(req.body);
+      const data = z
+        .object({
+          companyId: z.string().uuid(),
+          title: z.string().min(3).max(200),
+          description: z.string().min(20).max(20000),
+          location: z.string().min(2).max(150),
+          type: z.enum(["full-time", "part-time", "contract", "internship"]),
+          salaryMin: z.number().int().nonnegative().nullable().optional(),
+          salaryMax: z.number().int().nonnegative().nullable().optional(),
+        })
+        .refine(
+          (value) =>
+            value.salaryMin == null ||
+            value.salaryMax == null ||
+            value.salaryMin <= value.salaryMax,
+          {
+            message: "Invalid salary range",
+          },
+        )
+        .parse(req.body);
 
-    const rows = await db`
+      const rows = await db`
       INSERT INTO jobs(
         company_id,
         title,
@@ -582,21 +607,21 @@ export async function buildApp() {
       RETURNING *
     `;
 
-    if (!rows.length) {
-      return reply.code(403).send({
-        error: "Company not owned by you",
-      });
-    }
+      if (!rows.length) {
+        return reply.code(403).send({
+          error: "Company not owned by you",
+        });
+      }
 
-    return reply.code(201).send(rows[0]);
-  });
+      return reply.code(201).send(rows[0]);
+    });
 
-  app.get("/employer/jobs", async (req, reply) => {
-    const user = await requireUser(req, reply, "employer");
+    app.get("/employer/jobs", async (req, reply) => {
+      const user = await requireUser(req, reply, "employer");
 
-    if (!user) return;
+      if (!user) return;
 
-    return db`
+      return db`
       SELECT
         j.*,
         c.name AS company_name,
@@ -610,30 +635,30 @@ export async function buildApp() {
       WHERE c.owner_id = ${user.id}
       ORDER BY j.created_at DESC
     `;
-  });
+    });
 
-  // --------------------------------------------------
-  // Applications
-  // --------------------------------------------------
+    // --------------------------------------------------
+    // Applications
+    // --------------------------------------------------
 
-  app.post("/jobs/:id/apply", async (req, reply) => {
-    const user = await requireUser(req, reply, "seeker");
+    app.post("/jobs/:id/apply", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
 
-    if (!user) return;
+      if (!user) return;
 
-    const { id } = z
-      .object({
-        id: z.string().uuid(),
-      })
-      .parse(req.params);
+      const { id } = z
+        .object({
+          id: z.string().uuid(),
+        })
+        .parse(req.params);
 
-    const { coverLetter } = z
-      .object({
-        coverLetter: z.string().max(5000).default(""),
-      })
-      .parse(req.body);
+      const { coverLetter } = z
+        .object({
+          coverLetter: z.string().max(5000).default(""),
+        })
+        .parse(req.body);
 
-    const rows = await db`
+      const rows = await db`
       INSERT INTO applications(
         job_id,
         seeker_id,
@@ -650,21 +675,21 @@ export async function buildApp() {
       RETURNING *
     `;
 
-    if (!rows.length) {
-      return reply.code(409).send({
-        error: "Job unavailable or already applied",
-      });
-    }
+      if (!rows.length) {
+        return reply.code(409).send({
+          error: "Job unavailable or already applied",
+        });
+      }
 
-    return reply.code(201).send(rows[0]);
-  });
+      return reply.code(201).send(rows[0]);
+    });
 
-  app.get("/applications/mine", async (req, reply) => {
-    const user = await requireUser(req, reply, "seeker");
+    app.get("/applications/mine", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
 
-    if (!user) return;
+      if (!user) return;
 
-    return db`
+      return db`
       SELECT
         a.id,
         a.status,
@@ -678,20 +703,20 @@ export async function buildApp() {
       WHERE a.seeker_id = ${user.id}
       ORDER BY a.created_at DESC
     `;
-  });
+    });
 
-  app.get("/employer/jobs/:id/applications", async (req, reply) => {
-    const user = await requireUser(req, reply, "employer");
+    app.get("/employer/jobs/:id/applications", async (req, reply) => {
+      const user = await requireUser(req, reply, "employer");
 
-    if (!user) return;
+      if (!user) return;
 
-    const { id } = z
-      .object({
-        id: z.string().uuid(),
-      })
-      .parse(req.params);
+      const { id } = z
+        .object({
+          id: z.string().uuid(),
+        })
+        .parse(req.params);
 
-    return db`
+      return db`
         SELECT
           a.id,
           a.status,
@@ -707,26 +732,26 @@ export async function buildApp() {
           AND c.owner_id = ${user.id}
         ORDER BY a.created_at DESC
       `;
-  });
+    });
 
-  app.patch("/employer/applications/:id", async (req, reply) => {
-    const user = await requireUser(req, reply, "employer");
+    app.patch("/employer/applications/:id", async (req, reply) => {
+      const user = await requireUser(req, reply, "employer");
 
-    if (!user) return;
+      if (!user) return;
 
-    const { id } = z
-      .object({
-        id: z.string().uuid(),
-      })
-      .parse(req.params);
+      const { id } = z
+        .object({
+          id: z.string().uuid(),
+        })
+        .parse(req.params);
 
-    const { status } = z
-      .object({
-        status: z.enum(["reviewing", "shortlisted", "rejected", "hired"]),
-      })
-      .parse(req.body);
+      const { status } = z
+        .object({
+          status: z.enum(["reviewing", "shortlisted", "rejected", "hired"]),
+        })
+        .parse(req.body);
 
-    const rows = await db`
+      const rows = await db`
         UPDATE applications a
         SET status = ${status}
         FROM jobs j
@@ -737,33 +762,33 @@ export async function buildApp() {
         RETURNING a.*
       `;
 
-    return (
-      rows[0] ??
-      reply.code(404).send({
-        error: "Application not found",
-      })
-    );
-  });
+      return (
+        rows[0] ??
+        reply.code(404).send({
+          error: "Application not found",
+        })
+      );
+    });
 
-  // --------------------------------------------------
-  // Job seeker profile
-  // --------------------------------------------------
+    // --------------------------------------------------
+    // Job seeker profile
+    // --------------------------------------------------
 
-  app.patch("/profile", async (req, reply) => {
-    const user = await requireUser(req, reply, "seeker");
+    app.patch("/profile", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
 
-    if (!user) return;
+      if (!user) return;
 
-    const data = z
-      .object({
-        fullName: z.string().trim().min(2).max(120),
-        headline: z.string().trim().max(180).default(""),
-        location: z.string().trim().max(150).default(""),
-        bio: z.string().trim().max(3000).default(""),
-      })
-      .parse(req.body);
+      const data = z
+        .object({
+          fullName: z.string().trim().min(2).max(120),
+          headline: z.string().trim().max(180).default(""),
+          location: z.string().trim().max(150).default(""),
+          bio: z.string().trim().max(3000).default(""),
+        })
+        .parse(req.body);
 
-    const rows = await db`
+      const rows = await db`
       UPDATE users
       SET
         full_name = ${data.fullName},
@@ -781,15 +806,15 @@ export async function buildApp() {
         bio
     `;
 
-    return rows[0];
-  });
+      return rows[0];
+    });
 
-  app.get("/profile", async (req, reply) => {
-    const user = await requireUser(req, reply, "seeker");
+    app.get("/profile", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
 
-    if (!user) return;
+      if (!user) return;
 
-    const rows = await db`
+      const rows = await db`
       SELECT
         id,
         email,
@@ -802,19 +827,19 @@ export async function buildApp() {
       WHERE id = ${user.id}
     `;
 
-    return rows[0];
-  });
+      return rows[0];
+    });
 
-  // --------------------------------------------------
-  // Saved jobs
-  // --------------------------------------------------
+    // --------------------------------------------------
+    // Saved jobs
+    // --------------------------------------------------
 
-  app.get("/saved-jobs", async (req, reply) => {
-    const user = await requireUser(req, reply, "seeker");
+    app.get("/saved-jobs", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
 
-    if (!user) return;
+      if (!user) return;
 
-    return db`
+      return db`
       SELECT
         j.id,
         j.title,
@@ -832,20 +857,20 @@ export async function buildApp() {
         AND j.status = 'published'
       ORDER BY j.created_at DESC
     `;
-  });
+    });
 
-  app.put("/saved-jobs/:id", async (req, reply) => {
-    const user = await requireUser(req, reply, "seeker");
+    app.put("/saved-jobs/:id", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
 
-    if (!user) return;
+      if (!user) return;
 
-    const { id } = z
-      .object({
-        id: z.string().uuid(),
-      })
-      .parse(req.params);
+      const { id } = z
+        .object({
+          id: z.string().uuid(),
+        })
+        .parse(req.params);
 
-    const rows = await db`
+      const rows = await db`
       INSERT INTO saved_jobs(user_id, job_id)
       SELECT
         ${user.id},
@@ -857,8 +882,8 @@ export async function buildApp() {
       RETURNING job_id
     `;
 
-    if (!rows.length) {
-      const existing = await db`
+      if (!rows.length) {
+        const existing = await db`
         SELECT 1
         FROM saved_jobs s
         JOIN jobs j ON j.id = s.job_id
@@ -867,58 +892,58 @@ export async function buildApp() {
           AND j.status = 'published'
       `;
 
-      if (!existing.length) {
-        return reply.code(404).send({
-          error: "Job not found",
-        });
+        if (!existing.length) {
+          return reply.code(404).send({
+            error: "Job not found",
+          });
+        }
       }
-    }
 
-    return { ok: true };
-  });
+      return { ok: true };
+    });
 
-  app.delete("/saved-jobs/:id", async (req, reply) => {
-    const user = await requireUser(req, reply, "seeker");
+    app.delete("/saved-jobs/:id", async (req, reply) => {
+      const user = await requireUser(req, reply, "seeker");
 
-    if (!user) return;
+      if (!user) return;
 
-    const { id } = z
-      .object({
-        id: z.string().uuid(),
-      })
-      .parse(req.params);
+      const { id } = z
+        .object({
+          id: z.string().uuid(),
+        })
+        .parse(req.params);
 
-    await db`
+      await db`
       DELETE FROM saved_jobs
       WHERE user_id = ${user.id}
         AND job_id = ${id}
     `;
 
-    return { ok: true };
-  });
+      return { ok: true };
+    });
 
-  // --------------------------------------------------
-  // Employer job status
-  // --------------------------------------------------
+    // --------------------------------------------------
+    // Employer job status
+    // --------------------------------------------------
 
-  app.patch("/employer/jobs/:id", async (req, reply) => {
-    const user = await requireUser(req, reply, "employer");
+    app.patch("/employer/jobs/:id", async (req, reply) => {
+      const user = await requireUser(req, reply, "employer");
 
-    if (!user) return;
+      if (!user) return;
 
-    const { id } = z
-      .object({
-        id: z.string().uuid(),
-      })
-      .parse(req.params);
+      const { id } = z
+        .object({
+          id: z.string().uuid(),
+        })
+        .parse(req.params);
 
-    const { status } = z
-      .object({
-        status: z.enum(["draft", "published", "closed"]),
-      })
-      .parse(req.body);
+      const { status } = z
+        .object({
+          status: z.enum(["draft", "published", "closed"]),
+        })
+        .parse(req.body);
 
-    const rows = await db`
+      const rows = await db`
       UPDATE jobs j
       SET status = ${status}
       FROM companies c
@@ -928,24 +953,38 @@ export async function buildApp() {
       RETURNING j.*
     `;
 
-    if (!rows.length) {
-      return reply.code(404).send({
-        error: "Job not found",
-      });
+      if (!rows.length) {
+        return reply.code(404).send({
+          error: "Job not found",
+        });
+      }
+
+      return rows[0];
+    });
+
+    // --------------------------------------------------
+    // Graceful shutdown
+    // --------------------------------------------------
+
+    // Graceful shutdown
+
+    // --------------------------------------------------
+    // Graceful shutdown
+    // --------------------------------------------------
+
+    app.addHook("onClose", async () => {
+      await cleanupStartupResources(cleanup);
+      cleanup.length = 0;
+    });
+
+    return app;
+  } catch (startupError) {
+    try {
+      await cleanupStartupResources(cleanup);
+    } catch (cleanupError) {
+      console.error("API startup cleanup failed:", cleanupError);
     }
 
-    return rows[0];
-  });
-
-  // --------------------------------------------------
-  // Graceful shutdown
-  // --------------------------------------------------
-
-  app.addHook("onClose", async () => {
-    rateLimitRedis.disconnect();
-    await redis.quit();
-    await db.end();
-  });
-
-  return app;
+    throw startupError;
+  }
 }
