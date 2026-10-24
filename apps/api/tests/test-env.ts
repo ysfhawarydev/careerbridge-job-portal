@@ -1,5 +1,6 @@
 import { config } from "dotenv";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 config({
   path: fileURLToPath(new URL("../../../.env", import.meta.url)),
@@ -22,5 +23,6 @@ process.env.DATABASE_URL = TEST_DATABASE_URL;
 process.env.REDIS_URL = "redis://127.0.0.1:6379";
 process.env.WEB_ORIGIN = "http://localhost:3000";
 process.env.NODE_ENV = "test";
+process.env.RATE_LIMIT_NAMESPACE ??= `careerbridge:test:${randomUUID()}:`;
 
 export { TEST_DATABASE_URL };
