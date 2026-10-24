@@ -16,6 +16,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { promisify } from "node:util";
+import { isTrustedOrigin } from "./security.js";
 
 const scrypt = promisify(scryptCb);
 const db = postgres(
@@ -36,21 +37,22 @@ await app.register(cookie);
 await app.register(helmet);
 await app.register(rateLimit, { max: 100, timeWindow: "1 minute" });
 
-const allowedOrigin = new URL(process.env.WEB_ORIGIN ?? "http://localhost:3000").origin;
+const allowedOrigin = process.env.WEB_ORIGIN ?? "http://localhost:3000";
+
 app.addHook("preHandler", async (req, reply) => {
-  if (!["POST", "PATCH", "PUT", "DELETE"].includes(req.method)) return;
-  if (req.headers.origin !== undefined) {
-    if (req.headers.origin !== allowedOrigin)
-      return reply.code(403).send({ error: "Origin not allowed" });
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
     return;
   }
-  if (req.headers.referer) {
-    try {
-      if (new URL(req.headers.referer).origin === allowedOrigin) return;
-    } catch { /* Invalid Referer */ }
+
+  if (
+    !isTrustedOrigin(req.headers.origin, req.headers.referer, allowedOrigin)
+  ) {
+    return reply.code(403).send({
+      error: "Trusted origin required",
+    });
   }
-  return reply.code(403).send({ error: "Trusted origin required" });
 });
+
 app.setErrorHandler((error: unknown, request, reply) => {
   const isError = error instanceof Error;
 
@@ -108,7 +110,11 @@ async function currentUser(req: FastifyRequest): Promise<User | null> {
   >`SELECT u.id,u.email,u.full_name,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=${hash(token)} AND s.expires_at>now() LIMIT 1`;
   return rows[0] ?? null;
 }
-async function requireUser(req: FastifyRequest, reply: FastifyReply, role?: User["role"]) {
+async function requireUser(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  role?: User["role"],
+) {
   const user = await currentUser(req);
   if (!user) {
     reply.code(401).send({ error: "Authentication required" });
@@ -168,7 +174,8 @@ app.post(
     if (!rows.length || !(await verify(data.password, rows[0].password_hash)))
       return reply.code(401).send({ error: "Invalid credentials" });
     const previousToken = req.cookies.session;
-    if (previousToken) await db`DELETE FROM sessions WHERE token_hash=${hash(previousToken)}`;
+    if (previousToken)
+      await db`DELETE FROM sessions WHERE token_hash=${hash(previousToken)}`;
     await newSession(rows[0].id, reply);
     const { password_hash, ...user } = rows[0];
     return { user };
@@ -318,12 +325,14 @@ app.patch("/employer/applications/:id", async (req, reply) => {
 app.patch("/profile", async (req, reply) => {
   const user = await requireUser(req, reply, "seeker");
   if (!user) return;
-  const data = z.object({
-    fullName: z.string().trim().min(2).max(120),
-    headline: z.string().trim().max(180).default(""),
-    location: z.string().trim().max(150).default(""),
-    bio: z.string().trim().max(3000).default(""),
-  }).parse(req.body);
+  const data = z
+    .object({
+      fullName: z.string().trim().min(2).max(120),
+      headline: z.string().trim().max(180).default(""),
+      location: z.string().trim().max(150).default(""),
+      bio: z.string().trim().max(3000).default(""),
+    })
+    .parse(req.body);
   const rows = await db`UPDATE users SET full_name=${data.fullName},
     headline=${data.headline}, location=${data.location}, bio=${data.bio}
     WHERE id=${user.id} RETURNING id,email,full_name,role,headline,location,bio`;
@@ -354,9 +363,11 @@ app.put("/saved-jobs/:id", async (req, reply) => {
     SELECT ${user.id},id FROM jobs WHERE id=${id} AND status='published'
     ON CONFLICT DO NOTHING RETURNING job_id`;
   if (!rows.length) {
-    const existing = await db`SELECT 1 FROM saved_jobs s JOIN jobs j ON j.id=s.job_id
+    const existing =
+      await db`SELECT 1 FROM saved_jobs s JOIN jobs j ON j.id=s.job_id
       WHERE s.user_id=${user.id} AND s.job_id=${id} AND j.status='published'`;
-    if (!existing.length) return reply.code(404).send({ error: "Job not found" });
+    if (!existing.length)
+      return reply.code(404).send({ error: "Job not found" });
   }
   return { ok: true };
 });
@@ -371,9 +382,11 @@ app.patch("/employer/jobs/:id", async (req, reply) => {
   const user = await requireUser(req, reply, "employer");
   if (!user) return;
   const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
-  const { status } = z.object({
-    status: z.enum(["draft", "published", "closed"]),
-  }).parse(req.body);
+  const { status } = z
+    .object({
+      status: z.enum(["draft", "published", "closed"]),
+    })
+    .parse(req.body);
   const rows = await db`UPDATE jobs j SET status=${status}
     FROM companies c WHERE j.id=${id} AND c.id=j.company_id
     AND c.owner_id=${user.id} RETURNING j.*`;
