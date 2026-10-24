@@ -1056,7 +1056,7 @@ export default function Dashboard() {
                       <div className="divide-y divide-slate-100">
                         {applications.map((application) => (
                           <div
-                            className="flex items-center justify-between gap-4 py-4"
+                            className="flex flex-col gap-3 py-4"
                             key={application.id}
                           >
                             <div>
@@ -1094,7 +1094,7 @@ export default function Dashboard() {
                         {saved.map((job) => (
                           <div
                             key={job.id}
-                            className="flex flex-col gap-3 py-4"
+                            className="flex items-center justify-between gap-4 py-4"
                           >
                             <div>
                               <Link
