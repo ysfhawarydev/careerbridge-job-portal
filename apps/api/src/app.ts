@@ -20,6 +20,7 @@ import {
 } from "node:crypto";
 import { promisify } from "node:util";
 import { isTrustedOrigin } from "./security.js";
+import { loggerOptions } from "./logger.js";
 
 const scrypt = promisify(scryptCb);
 
@@ -55,7 +56,14 @@ export async function buildApp() {
   // Wait until Redis is connected before registering rate limiting.
   await rateLimitRedis.connect();
 
-  const app = Fastify({ logger: true, trustProxy: false });
+  const app = Fastify({
+    logger: loggerOptions,
+    trustProxy: false,
+  });
+
+  app.addHook("onRequest", async (request, reply) => {
+    reply.header("x-request-id", request.id);
+  });
 
   await app.register(cors, {
     origin: process.env.WEB_ORIGIN ?? "http://localhost:3000",
@@ -118,6 +126,7 @@ export async function buildApp() {
 
     return reply.code(status).send({
       error: message,
+      requestId: request.id,
     });
   });
 
