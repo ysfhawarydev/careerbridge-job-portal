@@ -115,6 +115,11 @@ export default function Home() {
   const [location, setLocation] = useState("");
   const [type, setType] = useState<(typeof kinds)[number]>("All types");
   const [sort, setSort] = useState<JobSort>("newest");
+
+  // Salary filters
+  const [minSalary, setMinSalary] = useState("");
+  const [maxSalary, setMaxSalary] = useState("");
+
   const [hasMore, setHasMore] = useState(false);
   const [page, setPage] = useState(1);
   const [error, setError] = useState("");
@@ -137,6 +142,14 @@ export default function Home() {
 
       if (type !== "All types") {
         params.set("type", type);
+      }
+
+      if (minSalary !== "") {
+        params.set("minSalary", minSalary);
+      }
+
+      if (maxSalary !== "") {
+        params.set("maxSalary", maxSalary);
       }
 
       try {
@@ -168,10 +181,11 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [q, location, type, sort, page]);
+  }, [q, location, type, sort, page, minSalary, maxSalary]);
 
   function search(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+
     setPage(1);
     setQ(keyword.trim());
     setLocation(place.trim());
@@ -188,6 +202,8 @@ export default function Home() {
     setLocation("");
     setKeyword("");
     setPlace("");
+    setMinSalary("");
+    setMaxSalary("");
     setPage(1);
   }
 
@@ -210,6 +226,14 @@ export default function Home() {
       .getElementById("opportunities")
       ?.scrollIntoView({ behavior: "smooth" });
   }
+
+  const hasActiveFilters =
+    Boolean(q) ||
+    Boolean(location) ||
+    type !== "All types" ||
+    sort !== "newest" ||
+    minSalary !== "" ||
+    maxSalary !== "";
 
   return (
     <main>
@@ -421,30 +445,71 @@ export default function Home() {
         </div>
 
         <div
-          className="mt-8 flex flex-wrap items-center gap-2"
+          className="mt-8 flex flex-wrap items-end gap-4"
           aria-label="Job filters"
         >
-          {kinds.map((kind) => (
-            <button
-              key={kind}
-              type="button"
-              onClick={() => {
-                setType(kind);
-                setPage(1);
-              }}
-              aria-pressed={type === kind}
-              className={
-                "rounded-full border px-4 py-2 text-sm font-semibold capitalize transition " +
-                (type === kind
-                  ? "border-blue-600 bg-blue-600 text-white"
-                  : "border-slate-200 bg-white text-slate-600 hover:border-blue-300")
-              }
-            >
-              {kind.replaceAll("-", " ")}
-            </button>
-          ))}
+          <div className="flex flex-wrap items-center gap-2">
+            {kinds.map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                onClick={() => {
+                  setType(kind);
+                  setPage(1);
+                }}
+                aria-pressed={type === kind}
+                className={
+                  "rounded-full border px-4 py-2 text-sm font-semibold capitalize transition " +
+                  (type === kind
+                    ? "border-blue-600 bg-blue-600 text-white"
+                    : "border-slate-200 bg-white text-slate-600 hover:border-blue-300")
+                }
+              >
+                {kind.replaceAll("-", " ")}
+              </button>
+            ))}
+          </div>
 
-          <label className="ml-auto flex items-center gap-2 text-sm font-semibold text-slate-600">
+          {/* Salary range filters */}
+          <div className="grid w-full gap-3 sm:grid-cols-2 lg:w-auto">
+            <div>
+              <label htmlFor="salary-filter-min" className="label">
+                Minimum salary
+              </label>
+              <input
+                id="salary-filter-min"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="Minimum"
+                value={minSalary}
+                onChange={(e) => {
+                  setMinSalary(e.target.value);
+                  setPage(1);
+                }}
+              />
+            </div>
+
+            <div>
+              <label htmlFor="salary-filter-max" className="label">
+                Maximum salary
+              </label>
+              <input
+                id="salary-filter-max"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="Maximum"
+                value={maxSalary}
+                onChange={(e) => {
+                  setMaxSalary(e.target.value);
+                  setPage(1);
+                }}
+              />
+            </div>
+          </div>
+
+          <label className="flex items-center gap-2 text-sm font-semibold text-slate-600">
             Sort by
             <select
               value={sort}
@@ -462,7 +527,7 @@ export default function Home() {
             </select>
           </label>
 
-          {(q || location || type !== "All types" || sort !== "newest") && (
+          {hasActiveFilters && (
             <button
               type="button"
               className="inline-flex items-center gap-1 text-sm font-semibold text-slate-500 hover:text-blue-600"
@@ -517,7 +582,7 @@ export default function Home() {
             <p className="mx-auto mt-2 max-w-md text-slate-500">
               {error
                 ? "Check your API connection and try again."
-                : "Try another keyword, location, or employment type. Employers can publish new opportunities from their dashboard."}
+                : "Try another keyword, location, salary range, or employment type. Employers can publish new opportunities from their dashboard."}
             </p>
 
             <button
@@ -584,7 +649,7 @@ export default function Home() {
                 n: "02",
                 icon: Search,
                 title: "Explore open roles",
-                desc: "Search by job title, location, and employment type.",
+                desc: "Search by job title, location, employment type, and salary.",
               },
               {
                 n: "03",

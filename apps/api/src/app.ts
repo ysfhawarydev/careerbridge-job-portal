@@ -669,15 +669,29 @@ export async function buildApp() {
           sort: z
             .enum(["newest", "salary-asc", "salary-desc"])
             .default("newest"),
+          minSalary: z.coerce.number().int().min(0).max(2147483647).optional(),
+          maxSalary: z.coerce.number().int().min(0).max(2147483647).optional(),
           limit: z.coerce.number().int().min(1).max(50).default(12),
           page: z.coerce.number().int().min(1).max(10000).default(1),
         })
+        .refine(
+          (query) =>
+            query.minSalary === undefined ||
+            query.maxSalary === undefined ||
+            query.minSalary <= query.maxSalary,
+          {
+            message: "Minimum salary cannot exceed maximum salary",
+            path: ["maxSalary"],
+          },
+        )
         .parse(req.query);
 
       const offset = (query.page - 1) * query.limit;
       const q = query.q?.trim() ?? "";
       const loc = query.location?.trim() ?? "";
       const type = query.type ?? "";
+      const minSalary = query.minSalary ?? null;
+      const maxSalary = query.maxSalary ?? null;
 
       const key =
         "jobs:" +
@@ -686,6 +700,8 @@ export async function buildApp() {
             q,
             loc,
             type,
+            minSalary,
+            maxSalary,
             sort: query.sort,
             offset,
             limit: query.limit,
@@ -726,6 +742,14 @@ export async function buildApp() {
           AND (
             ${type} = ''
             OR j.type = ${type}
+          )
+          AND (
+            ${minSalary}::integer IS NULL
+            OR COALESCE(j.salary_max, j.salary_min) >= ${minSalary}
+          )
+          AND (
+            ${maxSalary}::integer IS NULL
+            OR COALESCE(j.salary_min, j.salary_max) <= ${maxSalary}
           )
         ORDER BY
           CASE
@@ -1335,6 +1359,59 @@ export async function buildApp() {
           AND c.owner_id = ${user.id}
         RETURNING j.*
       `;
+
+      if (!rows.length) {
+        return reply.code(404).send({
+          error: "Job not found",
+        });
+      }
+
+      return rows[0];
+    });
+
+    // --------------------------------------------------
+    // Employer job salary
+    // --------------------------------------------------
+
+    app.patch("/employer/jobs/:id/salary", async (req, reply) => {
+      const user = await requireUser(req, reply, "employer");
+
+      if (!user) return;
+
+      const { id } = z
+        .object({
+          id: z.string().uuid(),
+        })
+        .parse(req.params);
+
+      const { salaryMin, salaryMax } = z
+        .object({
+          salaryMin: z.number().int().min(0).max(2147483647).nullable(),
+          salaryMax: z.number().int().min(0).max(2147483647).nullable(),
+        })
+        .refine(
+          (data) =>
+            data.salaryMin === null ||
+            data.salaryMax === null ||
+            data.salaryMin <= data.salaryMax,
+          {
+            message: "Minimum salary cannot exceed maximum salary",
+            path: ["salaryMax"],
+          },
+        )
+        .parse(req.body);
+
+      const rows = await db`
+    UPDATE jobs j
+    SET
+      salary_min = ${salaryMin},
+      salary_max = ${salaryMax}
+    FROM companies c
+    WHERE j.id = ${id}
+      AND c.id = j.company_id
+      AND c.owner_id = ${user.id}
+    RETURNING j.*
+  `;
 
       if (!rows.length) {
         return reply.code(404).send({

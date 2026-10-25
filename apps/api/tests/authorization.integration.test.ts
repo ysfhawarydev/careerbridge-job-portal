@@ -33,6 +33,8 @@ let companyId: string;
 let jobId: string;
 let applicationId: string;
 
+const testJobTitle = `Integration Test Engineer ${randomUUID()}`;
+
 async function register(role: "seeker" | "employer"): Promise<TestAccount> {
   const response = await app.inject({
     method: "POST",
@@ -107,7 +109,7 @@ beforeAll(async () => {
     },
     payload: {
       companyId,
-      title: "Integration Test Engineer",
+      title: testJobTitle,
       description:
         "A test engineering position created for authorization integration tests.",
       location: "Remote",
@@ -431,5 +433,163 @@ describe("Application tracking timeline", () => {
     const after = afterResponse.json() as TimelineEntry[];
 
     expect(after).toEqual(before);
+  });
+});
+
+describe("Job salary management", () => {
+  it("filters jobs by minimum salary", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/jobs?minSalary=60000&q=${encodeURIComponent(testJobTitle)}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const data = response.json();
+
+    expect(data.jobs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: jobId })]),
+    );
+  });
+
+  it("excludes jobs below the requested minimum salary", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/jobs?minSalary=100000&q=Integration%20Test%20Engineer`,
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    expect(
+      response.json().jobs.some((job: { id: string }) => job.id === jobId),
+    ).toBe(false);
+  });
+
+  it("filters jobs by maximum salary", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/jobs?maxSalary=70000&q=Integration%20Test%20Engineer`,
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    expect(response.json().jobs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: jobId })]),
+    );
+  });
+
+  it("excludes jobs above the requested maximum salary", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/jobs?maxSalary=40000&q=Integration%20Test%20Engineer`,
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    expect(
+      response.json().jobs.some((job: { id: string }) => job.id === jobId),
+    ).toBe(false);
+  });
+
+  it("rejects invalid salary filters", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/jobs?minSalary=-100",
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("rejects a minimum salary greater than the maximum", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/jobs?minSalary=90000&maxSalary=50000",
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("prevents another employer from editing a job salary", async () => {
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/employer/jobs/${jobId}/salary`,
+      headers: {
+        origin,
+        cookie: employerB.cookie,
+      },
+      payload: {
+        salaryMin: 100000,
+        salaryMax: 150000,
+      },
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("rejects an invalid salary range", async () => {
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/employer/jobs/${jobId}/salary`,
+      headers: {
+        origin,
+        cookie: employerA.cookie,
+      },
+      payload: {
+        salaryMin: 120000,
+        salaryMax: 80000,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("allows the owning employer to update a job salary", async () => {
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/employer/jobs/${jobId}/salary`,
+      headers: {
+        origin,
+        cookie: employerA.cookie,
+      },
+      payload: {
+        salaryMin: 70000,
+        salaryMax: 110000,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    expect(response.json()).toEqual(
+      expect.objectContaining({
+        id: jobId,
+        salary_min: 70000,
+        salary_max: 110000,
+      }),
+    );
+  });
+
+  it("allows the owning employer to clear a job salary", async () => {
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/employer/jobs/${jobId}/salary`,
+      headers: {
+        origin,
+        cookie: employerA.cookie,
+      },
+      payload: {
+        salaryMin: null,
+        salaryMax: null,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    expect(response.json()).toEqual(
+      expect.objectContaining({
+        id: jobId,
+        salary_min: null,
+        salary_max: null,
+      }),
+    );
   });
 });
