@@ -80,6 +80,12 @@ export default function Dashboard() {
 
   const [companies, setCompanies] = useState<Company[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [editingSalaryJobId, setEditingSalaryJobId] = useState<string | null>(
+    null,
+  );
+  const [editSalaryMin, setEditSalaryMin] = useState("");
+  const [editSalaryMax, setEditSalaryMax] = useState("");
+  const [salarySaving, setSalarySaving] = useState(false);
   const [applications, setApplications] = useState<Application[]>([]);
 
   const [companyName, setCompanyName] = useState("");
@@ -88,6 +94,8 @@ export default function Dashboard() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [location, setLocation] = useState("Remote");
+  const [salaryMin, setSalaryMin] = useState("");
+  const [salaryMax, setSalaryMax] = useState("");
   const [type, setType] = useState("full-time");
   const [companyId, setCompanyId] = useState("");
 
@@ -253,6 +261,59 @@ export default function Dashboard() {
     }
   }
 
+  function startEditingSalary(job: Job) {
+    setEditingSalaryJobId(job.id);
+    setEditSalaryMin(job.salary_min === null ? "" : String(job.salary_min));
+    setEditSalaryMax(job.salary_max === null ? "" : String(job.salary_max));
+    setError("");
+    setSuccess("");
+  }
+
+  async function saveJobSalary(jobId: string) {
+    setError("");
+    setSuccess("");
+
+    const min = editSalaryMin.trim() === "" ? null : Number(editSalaryMin);
+    const max = editSalaryMax.trim() === "" ? null : Number(editSalaryMax);
+
+    if (
+      (min !== null &&
+        (!Number.isInteger(min) || min < 0 || min > 2147483647)) ||
+      (max !== null && (!Number.isInteger(max) || max < 0 || max > 2147483647))
+    ) {
+      setError("Salary must be a non-negative whole number");
+      return;
+    }
+
+    if (min !== null && max !== null && min > max) {
+      setError("Minimum salary cannot exceed maximum salary");
+      return;
+    }
+
+    setSalarySaving(true);
+
+    try {
+      const updated = await api<Job>(`/employer/jobs/${jobId}/salary`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          salaryMin: min,
+          salaryMax: max,
+        }),
+      });
+
+      setJobs((current) =>
+        current.map((job) => (job.id === jobId ? { ...job, ...updated } : job)),
+      );
+
+      setEditingSalaryJobId(null);
+      setSuccess("Job salary updated successfully");
+    } catch (err) {
+      setError(errorMessage(err, "Unable to update job salary"));
+    } finally {
+      setSalarySaving(false);
+    }
+  }
+
   async function createCompany(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError("");
@@ -282,6 +343,15 @@ export default function Dashboard() {
     setError("");
     setSuccess("");
 
+    if (
+      salaryMin.trim() !== "" &&
+      salaryMax.trim() !== "" &&
+      Number(salaryMin) > Number(salaryMax)
+    ) {
+      setError("Minimum salary cannot exceed maximum salary");
+      return;
+    }
+
     try {
       await api("/jobs", {
         method: "POST",
@@ -290,12 +360,16 @@ export default function Dashboard() {
           title,
           description,
           location,
+          salaryMin: salaryMin.trim() === "" ? null : Number(salaryMin),
+          salaryMax: salaryMax.trim() === "" ? null : Number(salaryMax),
           type,
         }),
       });
 
       setTitle("");
       setDescription("");
+      setSalaryMin("");
+      setSalaryMax("");
       setSuccess("Job published successfully");
 
       await refresh("employer");
@@ -568,6 +642,38 @@ export default function Dashboard() {
                     />
                   </div>
 
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <label htmlFor="job-salary-min" className="label">
+                        Minimum salary
+                      </label>
+                      <input
+                        id="job-salary-min"
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="e.g. 50000"
+                        value={salaryMin}
+                        onChange={(e) => setSalaryMin(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="job-salary-max" className="label">
+                        Maximum salary
+                      </label>
+                      <input
+                        id="job-salary-max"
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="e.g. 90000"
+                        value={salaryMax}
+                        onChange={(e) => setSalaryMax(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
                   <div>
                     <label htmlFor="job-type" className="label">
                       Employment type
@@ -614,6 +720,96 @@ export default function Dashboard() {
                           {job.company_name} · {job.location} ·{" "}
                           {job.applicants ?? 0} applicants
                         </p>
+
+                        <div className="mt-3 rounded-xl bg-slate-50 p-3">
+                          {editingSalaryJobId === job.id ? (
+                            <div className="space-y-3">
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div>
+                                  <label
+                                    className="label"
+                                    htmlFor={`edit-salary-min-${job.id}`}
+                                  >
+                                    Minimum salary
+                                  </label>
+                                  <input
+                                    id={`edit-salary-min-${job.id}`}
+                                    type="number"
+                                    min="0"
+                                    max="2147483647"
+                                    step="1"
+                                    value={editSalaryMin}
+                                    onChange={(e) =>
+                                      setEditSalaryMin(e.target.value)
+                                    }
+                                    disabled={salarySaving}
+                                  />
+                                </div>
+
+                                <div>
+                                  <label
+                                    className="label"
+                                    htmlFor={`edit-salary-max-${job.id}`}
+                                  >
+                                    Maximum salary
+                                  </label>
+                                  <input
+                                    id={`edit-salary-max-${job.id}`}
+                                    type="number"
+                                    min="0"
+                                    max="2147483647"
+                                    step="1"
+                                    value={editSalaryMax}
+                                    onChange={(e) =>
+                                      setEditSalaryMax(e.target.value)
+                                    }
+                                    disabled={salarySaving}
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  className="btn"
+                                  disabled={salarySaving}
+                                  onClick={() => void saveJobSalary(job.id)}
+                                >
+                                  {salarySaving ? "Saving…" : "Save salary"}
+                                </button>
+
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
+                                  disabled={salarySaving}
+                                  onClick={() => setEditingSalaryJobId(null)}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-sm text-slate-600">
+                                <span className="font-semibold">Salary:</span>{" "}
+                                {job.salary_min === null &&
+                                job.salary_max === null
+                                  ? "Not listed"
+                                  : `${job.salary_min?.toLocaleString() ?? "—"} – ${
+                                      job.salary_max?.toLocaleString() ?? "—"
+                                    }`}
+                              </p>
+
+                              <button
+                                type="button"
+                                className="text-sm font-semibold text-blue-600 hover:underline"
+                                onClick={() => startEditingSalary(job)}
+                              >
+                                Edit salary
+                              </button>
+                            </div>
+                          )}
+                        </div>
 
                         <div className="mt-3 flex flex-wrap items-center gap-3">
                           <Link
